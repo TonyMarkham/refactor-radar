@@ -1,2 +1,8 @@
 # Rust Build
 target/
+
+# Soul
+.soul/*
+
+# IDE
+.idea

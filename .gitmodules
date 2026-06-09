@@ -1,0 +1,9 @@
+[submodule "submodules/scip"]
+	path = submodules/scip
+	url = https://github.com/scip-code/scip.git
+[submodule "submodules/rust-analyzer"]
+	path = submodules/rust-analyzer
+	url = https://github.com/rust-lang/rust-analyzer
+[submodule "submodules/scip-dotnet"]
+	path = submodules/scip-dotnet
+	url = https://github.com/sourcegraph/scip-dotnet
