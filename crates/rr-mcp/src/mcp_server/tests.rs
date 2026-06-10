@@ -1,7 +1,7 @@
 use crate::{
-    BriefLlmClient, BriefLlmRequest, GeneratedBriefContent, GeneratedFiveW, LlmBriefParams,
-    McpError, McpResult, McpServer, ProjectScanParams, ProjectSummaryParams,
-    RustScipGenerateParams, ScipProjectParams,
+    BriefGenerationCapabilities, BriefLlmClient, BriefLlmRequest, BriefWorkPlanParams,
+    ElementBriefParams, GeneratedBriefContent, GeneratedFiveW, LlmBriefParams, McpError, McpResult,
+    McpServer, ProjectScanParams, ProjectSummaryParams, RustScipGenerateParams, ScipProjectParams,
 };
 use protobuf::{Message, MessageField};
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -83,21 +83,22 @@ fn record_max_active(max_active_calls: &std::sync::atomic::AtomicUsize, active: 
 }
 
 #[test]
-fn given_tool_params_when_generating_schema_then_runtime_paths_are_not_exposed() {
+fn given_tool_params_when_generating_schema_then_runtime_paths_are_not_exposed()
+-> Result<(), Box<dyn std::error::Error>> {
     let scan_schema = schemars::schema_for!(ProjectScanParams);
     let generate_schema = schemars::schema_for!(RustScipGenerateParams);
     let brief_schema = schemars::schema_for!(LlmBriefParams);
 
-    let scan_schema_json = serde_json::to_string(&scan_schema).expect("scan schema serializes");
-    let generate_schema_json =
-        serde_json::to_string(&generate_schema).expect("generate schema serializes");
-    let brief_schema_json = serde_json::to_string(&brief_schema).expect("brief schema serializes");
+    let scan_schema_json = serde_json::to_string(&scan_schema)?;
+    let generate_schema_json = serde_json::to_string(&generate_schema)?;
+    let brief_schema_json = serde_json::to_string(&brief_schema)?;
 
     assert!(!scan_schema_json.contains("rust_analyzer_path"));
     assert!(!generate_schema_json.contains("rust_analyzer_path"));
     assert!(!brief_schema_json.contains("rust_analyzer_path"));
     assert!(brief_schema_json.contains("brief_model"));
     assert!(brief_schema_json.contains("max_concurrent_requests"));
+    Ok(())
 }
 
 #[test]
@@ -227,6 +228,173 @@ async fn given_missing_project_when_getting_summary_then_mcp_error_is_returned()
         .err();
 
     assert!(error.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn given_loaded_project_when_generating_brief_work_plan_then_codex_subagent_tasks_are_returned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = McpServer::with_runtime_config(None, None, None);
+    load_fixture_project(&server).await?;
+
+    let Json(result) = server
+        .generate_brief_work_plan_with_capabilities(
+            BriefWorkPlanParams {
+                project_id: "fixture".to_owned(),
+                symbol_ids: Some(vec![SYMBOL.to_owned()]),
+                limit: None,
+                reference_limit: Some(3),
+                include_inferred: Some(true),
+                budget_tokens: Some(500),
+                max_subagent_tasks: Some(4),
+                preferred_agent: Some("explorer".to_owned()),
+                brief_model: Some("test-model-hint".to_owned()),
+            },
+            unsupported_sampling_capabilities(),
+        )
+        .await
+        .map_err(to_io_error)?;
+
+    assert_eq!("fixture", result["project_id"]);
+    assert_eq!("5w-summary-v1", result["prompt_version"]);
+    assert_eq!("codex-parent-spawns-subagents", result["execution_model"]);
+    assert_eq!(
+        false,
+        result["generation_capabilities"]["sampling_supported"]
+    );
+    assert_eq!(
+        "generate_brief_work_plan",
+        result["generation_capabilities"]["fallback_tool"]
+    );
+    assert_eq!("brief-task-001", result["tasks"][0]["task_id"]);
+    assert_eq!("explorer", result["tasks"][0]["preferred_agent"]);
+    assert_eq!(SYMBOL, result["tasks"][0]["symbol_ids"][0]);
+    assert_eq!(
+        "get_element_brief",
+        result["tasks"][0]["tool_calls"][0]["tool_name"]
+    );
+    assert_eq!(
+        "fixture",
+        result["tasks"][0]["tool_calls"][0]["arguments"]["project_id"]
+    );
+    assert_eq!(
+        1,
+        result["tasks"][0]["tool_calls"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+    );
+    assert_eq!("fixture::brief-task-001", result["tasks"][0]["merge_key"]);
+    assert!(
+        result["tasks"][0]["expected_output_schema"]["required_fields"]
+            .as_array()
+            .map(|items| items.iter().any(|item| item == "merge_key"))
+            .unwrap_or(false)
+    );
+    assert!(
+        result["parent_instructions"]
+            .as_array()
+            .map(|items| items.iter().any(|item| {
+                item.as_str()
+                    .map(|text| text.contains("MCP server does not spawn"))
+                    .unwrap_or(false)
+            }))
+            .unwrap_or(false)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn given_multiple_symbols_when_generating_brief_work_plan_then_tasks_respect_max_subagent_tasks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = McpServer::with_runtime_config(None, None, None);
+    load_fixture_project(&server).await?;
+
+    let Json(result) = server
+        .generate_brief_work_plan_with_capabilities(
+            work_plan_params(vec![SYMBOL, SECOND_SYMBOL, THIRD_SYMBOL], Some(2)),
+            unsupported_sampling_capabilities(),
+        )
+        .await
+        .map_err(to_io_error)?;
+
+    assert_eq!(
+        2,
+        result["tasks"].as_array().map(Vec::len).unwrap_or_default()
+    );
+    assert_eq!(
+        2,
+        result["tasks"][0]["symbol_ids"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+    );
+    assert_eq!(
+        1,
+        result["tasks"][1]["symbol_ids"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn given_sampling_capabilities_when_generating_brief_work_plan_then_llm_tool_call_is_scoped_to_symbols()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = McpServer::with_runtime_config(None, None, None);
+    load_fixture_project(&server).await?;
+
+    let Json(result) = server
+        .generate_brief_work_plan_with_capabilities(
+            work_plan_params(vec![SYMBOL, SECOND_SYMBOL], Some(1)),
+            sampling_capabilities(),
+        )
+        .await
+        .map_err(to_io_error)?;
+
+    let tool_calls = result["tasks"][0]["tool_calls"]
+        .as_array()
+        .ok_or_else(|| std::io::Error::other("missing tool calls"))?;
+    assert_eq!(3, tool_calls.len());
+    assert_eq!("generate_llm_brief", tool_calls[2]["tool_name"]);
+    assert_eq!("fixture", tool_calls[2]["arguments"]["project_id"]);
+    assert_eq!(
+        2,
+        tool_calls[2]["arguments"]["symbol_ids"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+    );
+    assert_eq!(
+        true,
+        result["generation_capabilities"]["sampling_supported"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn given_project_qualified_element_brief_when_symbol_forms_are_used_then_same_element_is_returned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = McpServer::with_runtime_config(None, None, None);
+    load_fixture_project(&server).await?;
+    let stable_id = format!("scip:{SYMBOL}");
+
+    for symbol_id in [SYMBOL.to_owned(), stable_id.clone()] {
+        let Json(result) = server
+            .get_element_brief(Parameters(ElementBriefParams {
+                symbol_id,
+                project_id: Some("fixture".to_owned()),
+                include_inferred: Some(true),
+                reference_limit: Some(3),
+            }))
+            .await
+            .map_err(to_io_error)?;
+
+        assert_eq!(SYMBOL, result["element"]["symbol_id"]);
+        assert_eq!(stable_id, result["element"]["stable_id"]);
+    }
+
     Ok(())
 }
 
@@ -465,6 +633,31 @@ async fn given_multiple_items_when_generating_llm_brief_then_concurrency_cap_is_
     Ok(())
 }
 
+#[tokio::test]
+async fn given_invalid_fake_response_when_generating_llm_brief_then_invalid_response_error_is_returned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = server_with_fake_client(None, None);
+    load_fixture_project(&server).await?;
+    let fake = FakeBriefLlmClient {
+        fail_invalid_response: true,
+        ..Default::default()
+    };
+
+    let error = server
+        .generate_llm_brief_with_client(
+            brief_params(Some("test-model"), Some(1), Some(3), vec![SYMBOL]),
+            Arc::new(fake),
+        )
+        .await
+        .err()
+        .ok_or_else(|| std::io::Error::other("expected invalid response error"))?;
+    let message = format!("{error:?}");
+
+    assert!(message.contains("brief sampling response was invalid"));
+    assert!(message.contains("fake invalid response"));
+    Ok(())
+}
+
 fn write_fixture_scip()
 -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
@@ -507,6 +700,49 @@ fn brief_params(
         budget_tokens: Some(500),
         brief_model: brief_model.map(str::to_owned),
         max_concurrent_requests,
+    }
+}
+
+fn work_plan_params(
+    symbol_ids: Vec<&str>,
+    max_subagent_tasks: Option<usize>,
+) -> BriefWorkPlanParams {
+    BriefWorkPlanParams {
+        project_id: "fixture".to_owned(),
+        symbol_ids: Some(symbol_ids.into_iter().map(str::to_owned).collect()),
+        limit: None,
+        reference_limit: Some(3),
+        include_inferred: Some(true),
+        budget_tokens: Some(500),
+        max_subagent_tasks,
+        preferred_agent: Some("explorer".to_owned()),
+        brief_model: Some("test-model-hint".to_owned()),
+    }
+}
+
+fn unsupported_sampling_capabilities() -> BriefGenerationCapabilities {
+    BriefGenerationCapabilities {
+        sampling_supported: false,
+        legacy_sampling_supported: false,
+        task_sampling_create_message_supported: false,
+        generate_llm_brief_available: false,
+        deterministic_work_plan_available: true,
+        fallback_tool: "generate_brief_work_plan".to_owned(),
+        unsupported_error_message: "MCP client does not advertise sampling support".to_owned(),
+        notes: vec!["Use deterministic work-plan path in this test.".to_owned()],
+    }
+}
+
+fn sampling_capabilities() -> BriefGenerationCapabilities {
+    BriefGenerationCapabilities {
+        sampling_supported: true,
+        legacy_sampling_supported: true,
+        task_sampling_create_message_supported: false,
+        generate_llm_brief_available: true,
+        deterministic_work_plan_available: true,
+        fallback_tool: "generate_brief_work_plan".to_owned(),
+        unsupported_error_message: "MCP client does not advertise sampling support".to_owned(),
+        notes: vec!["Sampling is enabled in this test.".to_owned()],
     }
 }
 

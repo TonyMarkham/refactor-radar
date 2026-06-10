@@ -1,6 +1,12 @@
 pub mod brief_cache_key;
+pub mod brief_generation_capabilities;
 pub mod brief_llm_client;
 pub mod brief_llm_request;
+pub mod brief_task_output_schema;
+pub mod brief_task_tool_call;
+pub mod brief_work_plan;
+pub mod brief_work_plan_params;
+pub mod brief_work_task;
 pub mod element_brief_params;
 pub mod element_params;
 pub mod element_query_params;
@@ -29,12 +35,15 @@ pub mod scip_project_result;
 pub mod source_span_params;
 pub mod special;
 
-// --- pub(crate) ---
-pub(crate) use special::brief_llm_user_prompt::GENERATED_BRIEF_USER_PROMPT_TEMPLATE;
-
 pub use brief_cache_key::BriefCacheKey;
+pub use brief_generation_capabilities::BriefGenerationCapabilities;
 pub use brief_llm_client::BriefLlmClient;
 pub use brief_llm_request::BriefLlmRequest;
+pub use brief_task_output_schema::BriefTaskOutputSchema;
+pub use brief_task_tool_call::BriefTaskToolCall;
+pub use brief_work_plan::BriefWorkPlan;
+pub use brief_work_plan_params::BriefWorkPlanParams;
+pub use brief_work_task::BriefWorkTask;
 pub use element_brief_params::ElementBriefParams;
 pub use element_params::ElementParams;
 pub use element_query_params::ElementQueryParams;
@@ -61,3 +70,4 @@ pub use sampling_brief_llm_client::SamplingBriefLlmClient;
 pub use scip_project_params::ScipProjectParams;
 pub use scip_project_result::ScipProjectResult;
 pub use source_span_params::SourceSpanParams;
+pub use special::brief_llm_user_prompt::GENERATED_BRIEF_USER_PROMPT_TEMPLATE;

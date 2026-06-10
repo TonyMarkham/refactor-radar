@@ -1,0 +1,246 @@
+mod support;
+
+use support::{
+    fixture_scip::{PROJECT_ID, SYMBOL, write_fixture_scip},
+    sampling_test_client::SamplingTestClient,
+};
+
+use rmcp::{
+    ServiceExt,
+    model::{CallToolRequestParams, JsonObject},
+};
+use rr_mcp::McpServer;
+
+#[tokio::test]
+async fn given_sampling_client_when_getting_generation_capabilities_then_sampling_is_available()
+-> Result<(), Box<dyn std::error::Error>> {
+    let client_handler = SamplingTestClient::with_sampling();
+    let client = start_protocol_pair(client_handler).await?;
+
+    let result = client
+        .peer()
+        .call_tool(CallToolRequestParams::new(
+            "get_brief_generation_capabilities",
+        ))
+        .await?;
+    let structured = result
+        .structured_content
+        .ok_or_else(|| std::io::Error::other("missing structured content"))?;
+
+    assert_eq!(true, structured["sampling_supported"]);
+    assert_eq!(true, structured["generate_llm_brief_available"]);
+    assert_eq!(true, structured["deterministic_work_plan_available"]);
+
+    client.cancel().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn given_non_sampling_client_when_getting_generation_capabilities_then_work_plan_fallback_is_returned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let client_handler = SamplingTestClient::without_sampling();
+    let client = start_protocol_pair(client_handler).await?;
+
+    let result = client
+        .peer()
+        .call_tool(CallToolRequestParams::new(
+            "get_brief_generation_capabilities",
+        ))
+        .await?;
+    let structured = result
+        .structured_content
+        .ok_or_else(|| std::io::Error::other("missing structured content"))?;
+
+    assert_eq!(false, structured["sampling_supported"]);
+    assert_eq!(false, structured["generate_llm_brief_available"]);
+    assert_eq!(true, structured["deterministic_work_plan_available"]);
+    assert_eq!("generate_brief_work_plan", structured["fallback_tool"]);
+    assert_eq!(
+        "MCP client does not advertise sampling support",
+        structured["unsupported_error_message"]
+    );
+
+    client.cancel().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn given_mcp_client_when_generating_brief_work_plan_then_subagent_manifest_is_returned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let client_handler = SamplingTestClient::without_sampling();
+    let client = start_protocol_pair(client_handler.clone()).await?;
+
+    load_fixture_project(&client).await?;
+    let arguments = json_object(serde_json::json!({
+        "project_id": PROJECT_ID,
+        "symbol_ids": [SYMBOL],
+        "reference_limit": 1,
+        "include_inferred": true,
+        "budget_tokens": 500,
+        "max_subagent_tasks": 4,
+        "preferred_agent": "explorer",
+        "brief_model": "test-model-hint"
+    }))?;
+    let result = client
+        .peer()
+        .call_tool(CallToolRequestParams::new("generate_brief_work_plan").with_arguments(arguments))
+        .await?;
+
+    assert_eq!(Some(false), result.is_error);
+    let structured = result
+        .structured_content
+        .ok_or_else(|| std::io::Error::other("missing structured content"))?;
+
+    assert_eq!(
+        "codex-parent-spawns-subagents",
+        structured["execution_model"]
+    );
+    assert_eq!(
+        false,
+        structured["generation_capabilities"]["sampling_supported"]
+    );
+    assert_eq!(
+        "generate_brief_work_plan",
+        structured["generation_capabilities"]["fallback_tool"]
+    );
+    assert_eq!("brief-task-001", structured["tasks"][0]["task_id"]);
+    assert_eq!(
+        "get_element_brief",
+        structured["tasks"][0]["tool_calls"][0]["tool_name"]
+    );
+    assert_eq!(
+        PROJECT_ID,
+        structured["tasks"][0]["tool_calls"][0]["arguments"]["project_id"]
+    );
+    assert_eq!(
+        1,
+        structured["tasks"][0]["tool_calls"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+    );
+    assert_eq!(0, client_handler.sampling_call_count());
+
+    client.cancel().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn given_sampling_client_when_generating_llm_brief_then_protocol_happy_path_returns_generated_items()
+-> Result<(), Box<dyn std::error::Error>> {
+    let client_handler = SamplingTestClient::with_sampling();
+    let client = start_protocol_pair(client_handler.clone()).await?;
+
+    load_fixture_project(&client).await?;
+    let result = call_generate_llm_brief(&client, Some("test-model-hint")).await?;
+
+    assert_eq!(Some(false), result.is_error);
+    let structured = result
+        .structured_content
+        .ok_or_else(|| std::io::Error::other("missing structured content"))?;
+
+    assert_eq!(PROJECT_ID, structured["project_id"]);
+    assert_eq!("test-model-hint", structured["brief_model"]);
+    assert_eq!("test-model-hint", structured["model_hint"]);
+    assert_eq!("5w-summary-v1", structured["prompt_version"]);
+    assert_eq!(
+        "generated by protocol test client",
+        structured["items"][0]["summary"]
+    );
+    assert_eq!(
+        "generated from MCP sampling request",
+        structured["items"][0]["five_w"]["what"]
+    );
+    assert_eq!(
+        "protocol-test-model",
+        structured["items"][0]["generated_by_model"]
+    );
+    assert_eq!(1, client_handler.sampling_call_count());
+
+    client.cancel().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn given_non_sampling_client_when_generating_llm_brief_then_typed_unsupported_host_error_is_returned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let client_handler = SamplingTestClient::without_sampling();
+    let client = start_protocol_pair(client_handler.clone()).await?;
+
+    load_fixture_project(&client).await?;
+    let error = call_generate_llm_brief(&client, None)
+        .await
+        .err()
+        .ok_or_else(|| std::io::Error::other("expected unsupported-host error"))?;
+    let message = format!("{error:?}");
+
+    assert!(message.contains("MCP client does not advertise sampling support"));
+    assert_eq!(0, client_handler.sampling_call_count());
+
+    client.cancel().await?;
+    Ok(())
+}
+
+async fn start_protocol_pair(
+    client_handler: SamplingTestClient,
+) -> Result<
+    rmcp::service::RunningService<rmcp::RoleClient, SamplingTestClient>,
+    Box<dyn std::error::Error>,
+> {
+    let (server_transport, client_transport) = tokio::io::duplex(4096);
+    let _server_task = tokio::spawn(async move {
+        if let Ok(server) = McpServer::new().serve(server_transport).await {
+            let _ = server.waiting().await;
+        }
+    });
+
+    let client = client_handler.serve(client_transport).await?;
+    Ok(client)
+}
+
+async fn load_fixture_project(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, SamplingTestClient>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, path) = write_fixture_scip()?;
+    let arguments = json_object(serde_json::json!({
+        "path": path.display().to_string()
+    }))?;
+
+    let result = client
+        .peer()
+        .call_tool(CallToolRequestParams::new("load_scip_project").with_arguments(arguments))
+        .await?;
+
+    if result.is_error == Some(true) {
+        return Err(std::io::Error::other(format!("load_scip_project failed: {result:?}")).into());
+    }
+
+    Ok(())
+}
+
+async fn call_generate_llm_brief(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, SamplingTestClient>,
+    brief_model: Option<&str>,
+) -> Result<rmcp::model::CallToolResult, Box<dyn std::error::Error>> {
+    let arguments = json_object(serde_json::json!({
+        "project_id": PROJECT_ID,
+        "symbol_ids": [SYMBOL],
+        "reference_limit": 1,
+        "include_inferred": true,
+        "budget_tokens": 500,
+        "brief_model": brief_model,
+        "max_concurrent_requests": 1
+    }))?;
+
+    Ok(client
+        .peer()
+        .call_tool(CallToolRequestParams::new("generate_llm_brief").with_arguments(arguments))
+        .await?)
+}
+
+fn json_object(value: serde_json::Value) -> Result<JsonObject, Box<dyn std::error::Error>> {
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| std::io::Error::other("expected JSON object").into())
+}

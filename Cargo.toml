@@ -28,7 +28,7 @@ sha2                  = { version = "0.11.0" }
 soul-attributes       = { version = "0.1.1" }
 tempfile              = { version = "3.27.0" }
 thiserror             = { version = "2.0.18" }
-tokio                 = { version = "1.52.3", features = ["macros", "process", "rt-multi-thread"] }
+tokio                 = { version = "1.52.3", features = ["io-util", "macros", "process", "rt-multi-thread"] }
 
 rr-core               = { path = "crates/rr-core" }
 rr-scip               = { path = "crates/rr-scip" }

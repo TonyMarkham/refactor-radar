@@ -16,9 +16,9 @@ Prefer short runbooks over planning prose.
 read:
 - docs/adr/0001-refactor-radar-project-direction.md
 - VS-llm-brief.md
-- gpt-sucks-at-codex.md
+- gpt-suck-ass.md
 
-turn `gpt-sucks-at-codex.md` into a real impl plan with actual bash/code snippets
+turn `gpt-suck-ass.md` into a real impl plan with actual bash/code snippets
 
 **CRITICAL** Be sure to use all rust coding directives found in AGENTS.md
 **CRITICAL** Follow ALL current error handling practices in this repo.

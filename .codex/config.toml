@@ -97,6 +97,12 @@ approval_mode = "approve"
 [mcp_servers.refactor_radar.tools.find_related_symbols]
 approval_mode = "approve"
 
+[mcp_servers.refactor_radar.tools.get_brief_generation_capabilities]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.generate_brief_work_plan]
+approval_mode = "approve"
+
 [mcp_servers.soul.tools.soul_explain]
 approval_mode = "approve"
 

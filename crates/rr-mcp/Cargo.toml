@@ -24,6 +24,7 @@ rr-scip        = { workspace = true }
 
 [dev-dependencies]
 protobuf       = { workspace = true }
+rmcp           = { workspace = true, features = ["client"] }
 scip           = { workspace = true }
 
 [lints]
