@@ -16,14 +16,16 @@ Prefer short runbooks over planning prose.
 read:
 - docs/adr/0001-refactor-radar-project-direction.md
 - VS-llm-brief.md
+- gpt-sucks-at-codex.md
 
-turn `VS-llm-brief.md` into a real impl plan with actual bash/code snippets
+turn `gpt-sucks-at-codex.md` into a real impl plan with actual bash/code snippets
 
 **CRITICAL** Be sure to use all rust coding directives found in AGENTS.md
 **CRITICAL** Follow ALL current error handling practices in this repo.
 **CRITICAL** Be sure to only have 1 type (enum/struct/etc) per file.
 **CRITICAL** YOU ARE ONLY APPROVED TO EDIT THE PLAN FILE! DO NOT CREATE/EDIT/DELETE ANY CODE FILES!
 **CRITICAL** DO NOT ALTER ANY SUBMODULE.
+**CRITICAL** EVERY aspect of the plan NEEDS implementation code snippets. Prose-Only is UNACCEPTABLE!
 ```
 
 ---

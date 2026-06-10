@@ -731,8 +731,10 @@ dependencies = [
 name = "rr-mcp"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "error-location",
+ "futures",
  "protobuf",
  "rmcp",
  "rr-core",

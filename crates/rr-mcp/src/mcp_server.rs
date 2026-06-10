@@ -1,22 +1,26 @@
 use crate::{
-    ElementBriefParams, ElementParams, ElementQueryParams, FiveWSummaryParams,
-    FunctionSignatureParams, LlmBriefParams, McpError, McpResult, ProjectCache, ProjectScanParams,
-    ProjectScanResult, ProjectSummaryParams, ReferencesFindParams, RelatedSymbolsParams,
-    RustScipGenerateParams, RustScipGenerateResult, ScipProjectParams, ScipProjectResult,
-    SourceSpanParams, scip_to_protocol_error, to_protocol_error,
+    BriefCacheKey, BriefLlmClient, BriefLlmRequest, ElementBriefParams, ElementParams,
+    ElementQueryParams, FiveWSummaryParams, FunctionSignatureParams, GeneratedBrief,
+    GeneratedBriefCacheEntry, GeneratedBriefContent, LlmBriefParams, McpError, McpResult,
+    ProjectCache, ProjectScanParams, ProjectScanResult, ProjectSummaryParams, ReferencesFindParams,
+    RelatedSymbolsParams, RustScipGenerateParams, RustScipGenerateResult, SamplingBriefLlmClient,
+    ScipProjectParams, ScipProjectResult, SourceSpanParams, scip_to_protocol_error,
+    to_protocol_error,
 };
 
 use rr_core::{ElementSummary, SemanticModel};
 use rr_report::{build_element_brief, build_project_summary};
 use rr_scip::{Format, generate_rust_scip as run_rust_scip, project_scip_index};
 
+use futures::{StreamExt, stream};
 use rmcp::{
-    ErrorData as ProtocolError, ServerHandler,
+    ErrorData as ProtocolError, RoleServer, ServerHandler,
     handler::server::{
         router::tool::ToolRouter,
         wrapper::{Json, Parameters},
     },
     model::{ServerCapabilities, ServerInfo},
+    service::RequestContext,
     tool, tool_handler, tool_router,
 };
 use serde::Serialize;
@@ -212,9 +216,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "get_project_summary",
-          description = "Return one cached project summary",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "get_project_summary",
+        description = "Return one cached project summary",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn get_project_summary(
         &self,
@@ -231,9 +235,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "list_elements",
-          description = "List cached semantic elements",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "list_elements",
+        description = "List cached semantic elements",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn list_elements(
         &self,
@@ -278,9 +282,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "get_element",
-          description = "Return one element by stable ID or SCIP symbol",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "get_element",
+        description = "Return one element by stable ID or SCIP symbol",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn get_element(
         &self,
@@ -294,9 +298,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "get_function_signature",
-          description = "Return function signature facts",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "get_function_signature",
+        description = "Return function signature facts",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn get_function_signature(
         &self,
@@ -316,9 +320,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "get_element_brief",
-          description = "Return a 5W element brief",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "get_element_brief",
+        description = "Return a 5W element brief",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn get_element_brief(
         &self,
@@ -340,9 +344,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "get_5w_summary",
-          description = "Return the 5W summary and follow-up IDs for an element",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "get_5w_summary",
+        description = "Return the 5W summary and follow-up IDs for an element",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn get_5w_summary(
         &self,
@@ -382,9 +386,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "find_references",
-          description = "Return span metadata for symbol references",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "find_references",
+        description = "Return span metadata for symbol references",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn find_references(
         &self,
@@ -405,9 +409,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "find_related_symbols",
-          description = "Return child symbols and SCIP-derived function-like relations",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "find_related_symbols",
+        description = "Return child symbols and SCIP-derived function-like relations",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn find_related_symbols(
         &self,
@@ -444,9 +448,9 @@ impl McpServer {
     }
 
     #[tool(
-          name = "get_source_span",
-          description = "Return source span metadata without raw source",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "get_source_span",
+        description = "Return source span metadata without raw source",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn get_source_span(
         &self,
@@ -465,118 +469,157 @@ impl McpServer {
     }
 
     #[tool(
-          name = "generate_llm_brief",
-          description = "Return grounded per-element inputs for LLM-generated 5W summaries",
-          output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
+        name = "generate_llm_brief",
+        description = "Generate host-sampled per-element 5W summaries from cached RefactorRadar evidence",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn generate_llm_brief(
         &self,
+        context: RequestContext<RoleServer>,
         Parameters(params): Parameters<LlmBriefParams>,
     ) -> Result<Json<serde_json::Value>, ProtocolError> {
-        let cache = self.cache.read().await;
-        let model = cache
-            .models
-            .get(&params.project_id)
-            .ok_or_else(|| McpError::missing_project(params.project_id.clone()))
-            .map_err(to_protocol_error)?;
+        let brief_client = Arc::new(SamplingBriefLlmClient::new(context.peer.clone()));
+        self.generate_llm_brief_with_client(params, brief_client)
+            .await
+    }
 
-        let limit = params.limit.unwrap_or(25);
-        let reference_limit = params.reference_limit.unwrap_or(5);
-        let include_inferred = params.include_inferred.unwrap_or(true);
-        let brief_model = params
+    async fn generate_llm_brief_with_client(
+        &self,
+        params: LlmBriefParams,
+        brief_client: Arc<dyn BriefLlmClient>,
+    ) -> Result<Json<serde_json::Value>, ProtocolError> {
+        let model_hint = params
             .brief_model
-            .as_deref()
-            .or(self.brief_model.as_deref());
+            .clone()
+            .or_else(|| self.brief_model.clone());
+        let cache_model_key = model_hint
+            .clone()
+            .unwrap_or_else(|| "host-default".to_owned());
         let max_concurrent_requests = params
             .max_concurrent_requests
             .or(self.max_concurrent_requests)
             .unwrap_or(1)
             .max(1);
+        let max_tokens = params.budget_tokens.unwrap_or(800).min(u32::MAX as usize) as u32;
+        let (project_id, work_items) = {
+            let cache = self.cache.read().await;
+            let model = cache
+                .models
+                .get(&params.project_id)
+                .ok_or_else(|| McpError::missing_project(params.project_id.clone()))
+                .map_err(to_protocol_error)?;
+            let elements = select_llm_brief_elements(model, &params).map_err(to_protocol_error)?;
+            let mut work_items = Vec::with_capacity(elements.len());
 
-        let elements: Vec<&ElementSummary> = match &params.symbol_ids {
-            Some(symbol_ids) => symbol_ids
-                .iter()
-                .map(|symbol_id| {
-                    model
-                        .element_by_id(symbol_id)
-                        .ok_or_else(|| McpError::missing_element(symbol_id.clone()))
-                })
-                .collect::<McpResult<Vec<_>>>()
-                .map_err(to_protocol_error)?,
-            None => {
-                let mut ranked_elements: Vec<_> = model.elements.iter().collect();
-                ranked_elements.sort_by(|left, right| {
-                    right
-                        .reference_count
-                        .cmp(&left.reference_count)
-                        .then_with(|| left.display_name.cmp(&right.display_name))
-                        .then_with(|| left.symbol_id.as_str().cmp(right.symbol_id.as_str()))
+            for element in elements {
+                let brief = build_element_brief(
+                    model,
+                    element.symbol_id.as_str(),
+                    params.include_inferred.unwrap_or(true),
+                    params.reference_limit.unwrap_or(5),
+                )
+                .map_err(|error| McpError::report_generation_failed(error.message()))
+                .map_err(to_protocol_error)?;
+
+                let evidence_packet = serde_json::json!({
+                    "symbol_id": brief.element.symbol_id.as_str(),
+                    "stable_id": brief.element.stable_id.as_str(),
+                    "display_name": brief.element.display_name,
+                    "kind": format!("{:?}", brief.element.kind),
+                    "five_w": brief.five_w,
+                    "evidence": brief.evidence,
+                    "confirmed": brief.confirmed,
+                    "inferred": brief.inferred,
+                    "unknown": brief.unknown,
                 });
-                ranked_elements.into_iter().take(limit).collect()
+                let evidence_hash = evidence_hash(&evidence_packet).map_err(to_protocol_error)?;
+                let cache_key = BriefCacheKey {
+                    project_id: model.project.project_id.clone(),
+                    symbol_id: brief.element.symbol_id.as_str().to_owned(),
+                    evidence_hash: evidence_hash.clone(),
+                    prompt_version: LLM_BRIEF_PROMPT_VERSION.to_owned(),
+                    brief_model: cache_model_key.clone(),
+                };
+                let cached = cache
+                    .generated_briefs
+                    .get(&cache_key)
+                    .map(|entry| entry.brief.clone());
+
+                work_items.push((cache_key, evidence_hash, evidence_packet, cached));
             }
+
+            (model.project.project_id.clone(), work_items)
         };
 
-        let mut briefs = Vec::with_capacity(elements.len());
-        for element in elements {
-            let brief = build_element_brief(
-                model,
-                element.symbol_id.as_str(),
-                include_inferred,
-                reference_limit,
-            )
-            .map_err(|error| McpError::report_generation_failed(error.message()))
+        let generated_results = stream::iter(work_items)
+            .map(|(cache_key, evidence_hash, evidence_packet, cached)| {
+                let client = Arc::clone(&brief_client);
+                let model_hint = model_hint.clone();
+                let instructions = LLM_BRIEF_INSTRUCTIONS.to_owned();
+
+                async move {
+                    if let Some(brief) = cached {
+                        return Ok(brief);
+                    }
+
+                    let (content, generated_by_model) = client
+                        .generate(BriefLlmRequest {
+                            model_hint,
+                            instructions,
+                            evidence_packet,
+                            max_tokens,
+                        })
+                        .await?;
+
+                    Ok(generated_brief_from_content(
+                        content,
+                        evidence_hash,
+                        cache_key,
+                        generated_by_model,
+                        LLM_BRIEF_PROMPT_VERSION,
+                    ))
+                }
+            })
+            .buffered(max_concurrent_requests)
+            .collect::<Vec<McpResult<GeneratedBrief>>>()
+            .await
+            .into_iter()
+            .collect::<McpResult<Vec<_>>>()
             .map_err(to_protocol_error)?;
 
-            let evidence_packet = serde_json::json!({
-                "symbol_id": brief.element.symbol_id.as_str(),
-                "stable_id": brief.element.stable_id.as_str(),
-                "display_name": brief.element.display_name,
-                "kind": format!("{:?}", brief.element.kind),
-                "five_w": brief.five_w,
-                "evidence": brief.evidence,
-                "confirmed": brief.confirmed,
-                "inferred": brief.inferred,
-                "unknown": brief.unknown,
-            });
-            let hash = evidence_hash(&evidence_packet).map_err(to_protocol_error)?;
-
-            briefs.push(serde_json::json!({
-                "evidence_hash": hash,
-                "cache_key": {
-                    "project_id": model.project.project_id.as_str(),
-                    "symbol_id": brief.element.symbol_id.as_str(),
-                    "evidence_hash": hash.as_str(),
-                    "prompt_version": LLM_BRIEF_PROMPT_VERSION,
-                    "brief_model": brief_model,
-                },
-                "evidence_packet": evidence_packet,
-            }));
+        {
+            let mut cache = self.cache.write().await;
+            for brief in &generated_results {
+                cache.generated_briefs.insert(
+                    brief.cache_key.clone(),
+                    GeneratedBriefCacheEntry {
+                        brief: brief.clone(),
+                        evidence_hash: brief.evidence_hash.clone(),
+                        prompt_version: brief.prompt_version.clone(),
+                        model_hint: brief.cache_key.brief_model.clone(),
+                        generated_by_model: brief.generated_by_model.clone(),
+                    },
+                );
+            }
         }
 
         structured(serde_json::json!({
-            "project_id": model.project.project_id,
-            "brief_model": brief_model,
+            "project_id": project_id,
+            "brief_model": cache_model_key,
+            "model_hint": model_hint,
             "prompt_version": LLM_BRIEF_PROMPT_VERSION,
-            "instructions": LLM_BRIEF_INSTRUCTIONS,
-            "summary_schema": {
-                "summary": "string",
-                "five_w": {
-                    "who": "string",
-                    "what": "string",
-                    "when": "string",
-                    "where": "string",
-                    "why": "string",
-                    "how": "string"
-                },
-                "unknowns": ["string"],
-                "evidence_hash": "copy item.evidence_hash",
-                "cache_key": "copy item.cache_key"
-            },
-            "budget_tokens": params.budget_tokens,
             "max_concurrent_requests": max_concurrent_requests,
-            "items": briefs,
+            "items": generated_results,
         }))
         .map_err(to_protocol_error)
+    }
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for McpServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions("SCIP-backed RefactorRadar semantic query server")
     }
 }
 
@@ -594,6 +637,54 @@ fn evidence_hash(value: impl Serialize) -> McpResult<String> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>())
+}
+
+fn select_llm_brief_elements<'a>(
+    model: &'a SemanticModel,
+    params: &LlmBriefParams,
+) -> McpResult<Vec<&'a ElementSummary>> {
+    match &params.symbol_ids {
+        Some(symbol_ids) => symbol_ids
+            .iter()
+            .map(|symbol_id| {
+                model
+                    .element_by_id(symbol_id)
+                    .ok_or_else(|| McpError::missing_element(symbol_id.clone()))
+            })
+            .collect::<McpResult<Vec<_>>>(),
+        None => {
+            let mut ranked_elements: Vec<_> = model.elements.iter().collect();
+            ranked_elements.sort_by(|left, right| {
+                right
+                    .reference_count
+                    .cmp(&left.reference_count)
+                    .then_with(|| left.display_name.cmp(&right.display_name))
+                    .then_with(|| left.symbol_id.as_str().cmp(right.symbol_id.as_str()))
+            });
+            Ok(ranked_elements
+                .into_iter()
+                .take(params.limit.unwrap_or(25))
+                .collect())
+        }
+    }
+}
+
+fn generated_brief_from_content(
+    content: GeneratedBriefContent,
+    evidence_hash: String,
+    cache_key: BriefCacheKey,
+    generated_by_model: String,
+    prompt_version: &str,
+) -> GeneratedBrief {
+    GeneratedBrief {
+        summary: content.summary,
+        five_w: content.five_w,
+        unknowns: content.unknowns,
+        evidence_hash,
+        cache_key,
+        generated_by_model,
+        prompt_version: prompt_version.to_owned(),
+    }
 }
 
 fn occurrence_count(model: &SemanticModel) -> usize {
@@ -698,14 +789,6 @@ fn normalize_kind(value: &str) -> String {
         .filter(|character| *character != '_')
         .flat_map(char::to_lowercase)
         .collect()
-}
-
-#[tool_handler(router = self.tool_router)]
-impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("SCIP-backed RefactorRadar semantic query server")
-    }
 }
 
 #[cfg(test)]

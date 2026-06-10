@@ -73,6 +73,24 @@ pub enum McpError {
         details: String,
         location: ErrorLocation,
     },
+
+    #[error("{message} at {location}")]
+    BriefSamplingUnavailable {
+        message: &'static str,
+        location: ErrorLocation,
+    },
+    #[error("{message} at {location}")]
+    BriefGenerationRequestFailed {
+        message: &'static str,
+        details: String,
+        location: ErrorLocation,
+    },
+    #[error("{message} at {location}")]
+    BriefGenerationResponseInvalid {
+        message: &'static str,
+        details: String,
+        location: ErrorLocation,
+    },
 }
 
 impl McpError {
@@ -184,6 +202,32 @@ impl McpError {
         }
     }
 
+    #[track_caller]
+    pub fn brief_sampling_unavailable() -> Self {
+        Self::BriefSamplingUnavailable {
+            message: "MCP client does not advertise sampling support",
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
+    pub fn brief_generation_request_failed(details: impl Into<String>) -> Self {
+        Self::BriefGenerationRequestFailed {
+            message: "brief sampling request failed",
+            details: details.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
+    pub fn brief_generation_response_invalid(details: impl Into<String>) -> Self {
+        Self::BriefGenerationResponseInvalid {
+            message: "brief sampling response was invalid",
+            details: details.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::MissingProject { message, .. }
@@ -196,7 +240,10 @@ impl McpError {
             | Self::GeneratedScipMetadataReadFailed { message, .. }
             | Self::TemporaryScipOutputCreationFailed { message, .. }
             | Self::ReportGenerationFailed { message, .. }
-            | Self::ServerRuntime { message, .. } => message,
+            | Self::ServerRuntime { message, .. }
+            | Self::BriefSamplingUnavailable { message, .. }
+            | Self::BriefGenerationRequestFailed { message, .. }
+            | Self::BriefGenerationResponseInvalid { message, .. } => message,
         }
     }
 }

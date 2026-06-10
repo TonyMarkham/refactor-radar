@@ -5,8 +5,10 @@ edition.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-trait    = { workspace = true }
 clap           = { workspace = true }
 error-location = { workspace = true }
+futures        = { workspace = true }
 rmcp           = { workspace = true }
 schemars       = { workspace = true }
 serde          = { workspace = true }

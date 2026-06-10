@@ -1,3 +1,5 @@
+use crate::{BriefCacheKey, GeneratedBriefCacheEntry};
+
 use rr_core::SemanticModel;
 
 use std::{collections::HashMap, path::PathBuf};
@@ -9,6 +11,7 @@ pub struct ProjectCache {
     pub temporary_scip_paths: HashMap<String, tempfile::TempPath>,
     pub producer_metadata: HashMap<String, String>,
     pub generation_diagnostics: HashMap<String, String>,
+    pub generated_briefs: HashMap<BriefCacheKey, GeneratedBriefCacheEntry>,
 }
 
 impl ProjectCache {

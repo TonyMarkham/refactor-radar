@@ -39,6 +39,9 @@ pub fn to_protocol_error(error: McpError) -> ProtocolError {
             message,
             Some(json!({ "symbol_id": symbol_id, "project_ids": project_ids })),
         ),
+        McpError::BriefSamplingUnavailable { message, .. } => {
+            ProtocolError::invalid_request(message, None)
+        }
         McpError::SerializationFailed {
             message, details, ..
         }
@@ -46,6 +49,12 @@ pub fn to_protocol_error(error: McpError) -> ProtocolError {
             message, details, ..
         }
         | McpError::ServerRuntime {
+            message, details, ..
+        }
+        | McpError::BriefGenerationRequestFailed {
+            message, details, ..
+        }
+        | McpError::BriefGenerationResponseInvalid {
             message, details, ..
         } => ProtocolError::internal_error(message, Some(json!({ "details": details }))),
         McpError::GeneratedScipMetadataReadFailed {
