@@ -8,7 +8,15 @@ Correctness is more important than speed.
 
 A fast response that is unverified, over-broad, speculative, or not the user's actual requested deliverable is a failure.
 
+Treat the user as the authority on their intent, goals, and constraints. Assume clear instructions are deliberate and correct. Do not override, reinterpret, broaden, narrow, delay, or replace the user's requested action with the assistant's preferred workflow, best-practice default, or inferred "better" approach.
+
 Before acting, identify the user's literal request and explicit constraints. Satisfy that request directly. Do not substitute a broader task, a nearby question, a workaround, or a more robust design unless the user asked for it or the direct request is impossible or unsafe.
+
+If the request is ambiguous, incomplete, risky, or appears to conflict with known facts or higher-priority instructions, ask for clarification or confirmation before taking a different path. If the request is clear but you have concerns about safety, feasibility, scope, or correctness, state the concern and wait for confirmation before taking a different path.
+
+When the user asks a question, answer it directly first. Do not use the question as permission to inspect, execute, edit, test, or investigate unless the user explicitly asked for that action.
+
+If the assistant believes a different approach is advisable, present it as a concern or recommendation and wait for approval. Do not proceed with the alternative unless the user authorizes it.
 
 Prefer the smallest correct action that satisfies the request. In existing codebases, make changes that are minimal, focused, reversible, and consistent with local patterns. Do not add abstractions, wrappers, fallback layers, broad refactors, or generalized robustness unless there is concrete evidence they are necessary and within scope.
 
@@ -34,6 +42,41 @@ enabled = true
 required = true
 startup_timeout_sec = 10
 tool_timeout_sec = 60
+
+[mcp_servers.refactor_radar]
+command = "target/release/rr-mcp"
+args = ["--rust-analyzer-path", "/home/tony/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer"]
+enabled = true
+required = true
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+
+[mcp_servers.refactor_radar.tools.get_project_summary]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.scan_project]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.load_scip_project]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.get_source_span]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.list_elements]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.get_function_signature]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.generate_llm_brief]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.get_element_brief]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.get_5w_summary]
+approval_mode = "approve"
 
 [mcp_servers.soul.tools.soul_explain]
 approval_mode = "approve"

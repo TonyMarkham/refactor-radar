@@ -1,0 +1,27 @@
+[package]
+name = "rr-mcp"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap           = { workspace = true }
+error-location = { workspace = true }
+rmcp           = { workspace = true }
+schemars       = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+tempfile       = { workspace = true }
+thiserror      = { workspace = true }
+tokio          = { workspace = true }
+
+rr-core        = { workspace = true }
+rr-report      = { workspace = true }
+rr-scip        = { workspace = true }
+
+[dev-dependencies]
+protobuf       = { workspace = true }
+scip           = { workspace = true }
+
+[lints]
+workspace = true

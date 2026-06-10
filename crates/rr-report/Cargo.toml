@@ -1,0 +1,14 @@
+[package]
+name = "rr-report"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+error-location = { workspace = true }
+thiserror      = { workspace = true }
+
+rr-core        = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "rr-core"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+error-location = { workspace = true }
+serde          = { workspace = true }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+serde_json     = { workspace = true }
+
+[lints]
+workspace = true

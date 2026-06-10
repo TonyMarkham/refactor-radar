@@ -1,0 +1,21 @@
+[package]
+name = "rr-scip"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+error-location        = { workspace = true }
+protobuf              = { workspace = true }
+protobuf-json-mapping = { workspace = true }
+scip                  = { workspace = true }
+thiserror             = { workspace = true }
+tokio                 = { workspace = true }
+
+rr-core               = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
