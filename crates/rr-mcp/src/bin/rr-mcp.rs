@@ -8,6 +8,12 @@ use std::{path::PathBuf, process::ExitCode};
 struct Args {
     #[arg(long)]
     rust_analyzer_path: Option<PathBuf>,
+
+    #[arg(long)]
+    brief_model: Option<String>,
+
+    #[arg(long)]
+    max_concurrent_requests: Option<usize>,
 }
 
 #[tokio::main]
@@ -27,10 +33,14 @@ async fn main() -> ExitCode {
 async fn run() -> McpResult<()> {
     let args = Args::parse();
 
-    let service = McpServer::with_rust_analyzer_path(args.rust_analyzer_path)
-        .serve(stdio())
-        .await
-        .map_err(|error| McpError::server_runtime(error.to_string()))?;
+    let service = McpServer::with_runtime_config(
+        args.rust_analyzer_path,
+        args.brief_model,
+        args.max_concurrent_requests,
+    )
+    .serve(stdio())
+    .await
+    .map_err(|error| McpError::server_runtime(error.to_string()))?;
 
     service
         .waiting()

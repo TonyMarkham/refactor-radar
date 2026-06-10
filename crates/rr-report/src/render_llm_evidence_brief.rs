@@ -2,7 +2,7 @@ use crate::{ReportResult, build_element_brief, build_project_summary};
 
 use rr_core::{ElementSummary, SemanticModel, SymbolReferenceSummary};
 
-pub fn generate_llm_brief(
+pub fn render_llm_evidence_brief(
     model: &SemanticModel,
     budget_tokens: Option<usize>,
 ) -> ReportResult<String> {

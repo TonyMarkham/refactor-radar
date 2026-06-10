@@ -15,13 +15,15 @@ Prefer short runbooks over planning prose.
 ```text
 read:
 - docs/adr/0001-refactor-radar-project-direction.md
-- VS-RustMcp.md
+- VS-llm-brief.md
 
-turn `VS-RustMcp.md` into a real impl plan with actual bash/code snippets
+turn `VS-llm-brief.md` into a real impl plan with actual bash/code snippets
 
-**CRITICAL** Be sure to use all rust coding directives found in AGENS.md
+**CRITICAL** Be sure to use all rust coding directives found in AGENTS.md
+**CRITICAL** Follow ALL current error handling practices in this repo.
 **CRITICAL** Be sure to only have 1 type (enum/struct/etc) per file.
 **CRITICAL** YOU ARE ONLY APPROVED TO EDIT THE PLAN FILE! DO NOT CREATE/EDIT/DELETE ANY CODE FILES!
+**CRITICAL** DO NOT ALTER ANY SUBMODULE.
 ```
 
 ---

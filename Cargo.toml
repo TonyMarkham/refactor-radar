@@ -22,6 +22,7 @@ schemars                        = { version = "1.2.1", features = ["derive"] }
 # scip                            = { version = "0.8.1" }
 serde                           = { version = "1.0.228", features = ["derive"] }
 serde_json                      = { version = "1.0.150" }
+sha2                            = { version = "0.11.0" }
 soul-attributes                 = { version = "0.1.1" }
 tempfile                        = { version = "3.27.0" }
 thiserror                       = { version = "2.0.18" }

@@ -6,6 +6,10 @@ use crate::{
     SourceSpanParams, scip_to_protocol_error, to_protocol_error,
 };
 
+use rr_core::{ElementSummary, SemanticModel};
+use rr_report::{build_element_brief, build_project_summary};
+use rr_scip::{Format, generate_rust_scip as run_rust_scip, project_scip_index};
+
 use rmcp::{
     ErrorData as ProtocolError, ServerHandler,
     handler::server::{
@@ -15,19 +19,20 @@ use rmcp::{
     model::{ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
 };
-use rr_core::{ElementSummary, SemanticModel};
-use rr_report::{
-    build_element_brief, build_project_summary, generate_llm_brief as render_llm_brief,
-};
-use rr_scip::{Format, generate_rust_scip as run_rust_scip, project_scip_index};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
+
+const LLM_BRIEF_PROMPT_VERSION: &str = "5w-summary-v1";
+const LLM_BRIEF_INSTRUCTIONS: &str = "Generate one concise 5W summary per item using only evidence_packet facts. Preserve confirmed, inferred, and unknown distinctions. Use unknown when the evidence does not support a claim.";
 
 #[derive(Clone)]
 pub struct McpServer {
     cache: Arc<RwLock<ProjectCache>>,
     rust_analyzer_path: Option<PathBuf>,
+    brief_model: Option<String>,
+    max_concurrent_requests: Option<usize>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -37,9 +42,19 @@ impl McpServer {
     }
 
     pub fn with_rust_analyzer_path(rust_analyzer_path: Option<PathBuf>) -> Self {
+        Self::with_runtime_config(rust_analyzer_path, None, None)
+    }
+
+    pub fn with_runtime_config(
+        rust_analyzer_path: Option<PathBuf>,
+        brief_model: Option<String>,
+        max_concurrent_requests: Option<usize>,
+    ) -> Self {
         Self {
             cache: Arc::new(RwLock::new(ProjectCache::default())),
             rust_analyzer_path,
+            brief_model,
+            max_concurrent_requests,
             tool_router: Self::tool_router(),
         }
     }
@@ -136,7 +151,7 @@ impl McpServer {
 
     #[tool(
         name = "scan_project",
-        description = "Generate SCIP and load it into the cache"
+        description = "Scan one source project (Rust crate path today), build and cache its SCIP model, and return the project_id for query tools."
     )]
     async fn scan_project(
         &self,
@@ -451,7 +466,7 @@ impl McpServer {
 
     #[tool(
           name = "generate_llm_brief",
-          description = "Return a compact Markdown project brief",
+          description = "Return grounded per-element inputs for LLM-generated 5W summaries",
           output_schema = rmcp::handler::server::tool::schema_for_type::<rmcp::model::JsonObject>()
     )]
     async fn generate_llm_brief(
@@ -464,11 +479,104 @@ impl McpServer {
             .get(&params.project_id)
             .ok_or_else(|| McpError::missing_project(params.project_id.clone()))
             .map_err(to_protocol_error)?;
-        let brief = render_llm_brief(model, params.budget_tokens)
+
+        let limit = params.limit.unwrap_or(25);
+        let reference_limit = params.reference_limit.unwrap_or(5);
+        let include_inferred = params.include_inferred.unwrap_or(true);
+        let brief_model = params
+            .brief_model
+            .as_deref()
+            .or(self.brief_model.as_deref());
+        let max_concurrent_requests = params
+            .max_concurrent_requests
+            .or(self.max_concurrent_requests)
+            .unwrap_or(1)
+            .max(1);
+
+        let elements: Vec<&ElementSummary> = match &params.symbol_ids {
+            Some(symbol_ids) => symbol_ids
+                .iter()
+                .map(|symbol_id| {
+                    model
+                        .element_by_id(symbol_id)
+                        .ok_or_else(|| McpError::missing_element(symbol_id.clone()))
+                })
+                .collect::<McpResult<Vec<_>>>()
+                .map_err(to_protocol_error)?,
+            None => {
+                let mut ranked_elements: Vec<_> = model.elements.iter().collect();
+                ranked_elements.sort_by(|left, right| {
+                    right
+                        .reference_count
+                        .cmp(&left.reference_count)
+                        .then_with(|| left.display_name.cmp(&right.display_name))
+                        .then_with(|| left.symbol_id.as_str().cmp(right.symbol_id.as_str()))
+                });
+                ranked_elements.into_iter().take(limit).collect()
+            }
+        };
+
+        let mut briefs = Vec::with_capacity(elements.len());
+        for element in elements {
+            let brief = build_element_brief(
+                model,
+                element.symbol_id.as_str(),
+                include_inferred,
+                reference_limit,
+            )
             .map_err(|error| McpError::report_generation_failed(error.message()))
             .map_err(to_protocol_error)?;
 
-        structured(serde_json::json!({ "markdown": brief })).map_err(to_protocol_error)
+            let evidence_packet = serde_json::json!({
+                "symbol_id": brief.element.symbol_id.as_str(),
+                "stable_id": brief.element.stable_id.as_str(),
+                "display_name": brief.element.display_name,
+                "kind": format!("{:?}", brief.element.kind),
+                "five_w": brief.five_w,
+                "evidence": brief.evidence,
+                "confirmed": brief.confirmed,
+                "inferred": brief.inferred,
+                "unknown": brief.unknown,
+            });
+            let hash = evidence_hash(&evidence_packet).map_err(to_protocol_error)?;
+
+            briefs.push(serde_json::json!({
+                "evidence_hash": hash,
+                "cache_key": {
+                    "project_id": model.project.project_id.as_str(),
+                    "symbol_id": brief.element.symbol_id.as_str(),
+                    "evidence_hash": hash.as_str(),
+                    "prompt_version": LLM_BRIEF_PROMPT_VERSION,
+                    "brief_model": brief_model,
+                },
+                "evidence_packet": evidence_packet,
+            }));
+        }
+
+        structured(serde_json::json!({
+            "project_id": model.project.project_id,
+            "brief_model": brief_model,
+            "prompt_version": LLM_BRIEF_PROMPT_VERSION,
+            "instructions": LLM_BRIEF_INSTRUCTIONS,
+            "summary_schema": {
+                "summary": "string",
+                "five_w": {
+                    "who": "string",
+                    "what": "string",
+                    "when": "string",
+                    "where": "string",
+                    "why": "string",
+                    "how": "string"
+                },
+                "unknowns": ["string"],
+                "evidence_hash": "copy item.evidence_hash",
+                "cache_key": "copy item.cache_key"
+            },
+            "budget_tokens": params.budget_tokens,
+            "max_concurrent_requests": max_concurrent_requests,
+            "items": briefs,
+        }))
+        .map_err(to_protocol_error)
     }
 }
 
@@ -476,6 +584,16 @@ fn structured(value: impl Serialize) -> McpResult<Json<serde_json::Value>> {
     serde_json::to_value(value)
         .map(Json)
         .map_err(|error| McpError::serialization_failed(error.to_string()))
+}
+
+fn evidence_hash(value: impl Serialize) -> McpResult<String> {
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|error| McpError::serialization_failed(error.to_string()))?;
+    let digest = Sha256::digest(bytes);
+    Ok(digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>())
 }
 
 fn occurrence_count(model: &SemanticModel) -> usize {

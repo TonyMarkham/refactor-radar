@@ -297,23 +297,15 @@ async fn given_nonzero_rust_analyzer_when_generating_then_stderr_is_captured()
 -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempdir()?;
         let script_path = directory.path().join("ra-fails");
-        std::fs::write(&script_path, "#!/bin/sh\necho failed >&2\nexit 7\n")?;
-        let mut permissions = std::fs::metadata(&script_path)?.permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&script_path, permissions)?;
+        write_executable_script(&script_path, "#!/bin/sh\necho failed >&2\nexit 7\n")?;
         let output_path = directory.path().join("failed.scip");
 
-        let error = generate_rust_scip(
+        let error = generate_rust_scip_retrying_text_file_busy(
             directory.path(),
             &output_path,
-            Some(&script_path),
-            None,
-            false,
-            None,
+            &script_path,
         )
         .await
         .err();
@@ -331,26 +323,18 @@ async fn given_successful_rust_analyzer_when_writing_stderr_then_diagnostics_are
 -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempdir()?;
         let script_path = directory.path().join("ra-diagnostics");
-        std::fs::write(
+        write_executable_script(
             &script_path,
             "#!/bin/sh\necho indexed >&2\nprintf '' > \"$4\"\nexit 0\n",
         )?;
-        let mut permissions = std::fs::metadata(&script_path)?.permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&script_path, permissions)?;
         let output_path = directory.path().join("generated.scip");
 
-        let stderr = generate_rust_scip(
+        let stderr = generate_rust_scip_retrying_text_file_busy(
             directory.path(),
             &output_path,
-            Some(&script_path),
-            None,
-            false,
-            None,
+            &script_path,
         )
         .await?;
 
@@ -358,6 +342,65 @@ async fn given_successful_rust_analyzer_when_writing_stderr_then_diagnostics_are
         assert!(output_path.exists());
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn write_executable_script(
+    path: &std::path::Path,
+    contents: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary_path = path.with_extension("tmp");
+    {
+        let mut file = std::fs::File::create(&temporary_path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
+
+    let mut permissions = std::fs::metadata(&temporary_path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&temporary_path, permissions)?;
+    std::fs::rename(temporary_path, path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn generate_rust_scip_retrying_text_file_busy(
+    project_path: &std::path::Path,
+    output_path: &std::path::Path,
+    script_path: &std::path::Path,
+) -> Result<String, ScipError> {
+    let mut attempts = 0;
+    loop {
+        let result = generate_rust_scip(
+            project_path,
+            output_path,
+            Some(script_path),
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        if attempts < 5 && is_text_file_busy_launch_failure(&result) {
+            attempts += 1;
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        return result;
+    }
+}
+
+#[cfg(unix)]
+fn is_text_file_busy_launch_failure(result: &Result<String, ScipError>) -> bool {
+    matches!(
+        result,
+        Err(ScipError::RustAnalyzerLaunchFailed { details, .. })
+            if details.contains("Text file busy") || details.contains("os error 26")
+    )
 }
 
 fn sample_index() -> Index {

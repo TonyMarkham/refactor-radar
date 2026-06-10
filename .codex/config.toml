@@ -45,7 +45,14 @@ tool_timeout_sec = 60
 
 [mcp_servers.refactor_radar]
 command = "target/release/rr-mcp"
-args = ["--rust-analyzer-path", "/home/tony/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer"]
+args = [
+    "--rust-analyzer-path",
+    "/home/tony/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+    "--brief-model",
+    "gpt-5-mini",
+    "--max-concurrent-requests",
+    "4",
+]
 enabled = true
 required = true
 startup_timeout_sec = 10
@@ -76,6 +83,18 @@ approval_mode = "approve"
 approval_mode = "approve"
 
 [mcp_servers.refactor_radar.tools.get_5w_summary]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.find_references]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.generate_rust_scip]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.get_element]
+approval_mode = "approve"
+
+[mcp_servers.refactor_radar.tools.find_related_symbols]
 approval_mode = "approve"
 
 [mcp_servers.soul.tools.soul_explain]

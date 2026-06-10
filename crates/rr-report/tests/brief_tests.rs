@@ -3,7 +3,9 @@ use rr_core::{
     FunctionSignatureSummary, Language, ProjectSummary, SemanticModel, SourceSpan, StableId,
     SymbolId, SymbolReferenceSummary, TypeReferenceSummary,
 };
-use rr_report::{ReportError, build_element_brief, build_project_summary, generate_llm_brief};
+use rr_report::{
+    ReportError, build_element_brief, build_project_summary, render_llm_evidence_brief,
+};
 
 const ENUM_SYMBOL: &str = "rust-analyzer cargo basic_crate 0.1.0 basic_crate/Status#";
 const READY_SYMBOL: &str = "rust-analyzer cargo basic_crate 0.1.0 basic_crate/Status#Ready.";
@@ -367,11 +369,11 @@ fn given_function_signature_with_scip_ids_when_building_brief_then_ids_are_repor
 }
 
 #[test]
-fn given_llm_brief_when_generated_then_confirmed_inferred_and_unknown_sections_are_rendered()
+fn given_llm_evidence_brief_when_rendered_then_confirmed_inferred_and_unknown_sections_are_rendered()
 -> Result<(), Box<dyn std::error::Error>> {
     let model = sample_model()?;
 
-    let brief = generate_llm_brief(&model, None)?;
+    let brief = render_llm_evidence_brief(&model, None)?;
 
     assert!(brief.contains("Confirmed:"));
     assert!(brief.contains("Inferred:"));
@@ -380,7 +382,7 @@ fn given_llm_brief_when_generated_then_confirmed_inferred_and_unknown_sections_a
 }
 
 #[test]
-fn given_token_budget_when_generating_llm_brief_then_output_stays_within_budget()
+fn given_token_budget_when_rendering_llm_evidence_brief_then_output_stays_within_budget()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut model = sample_model()?;
     for column in [1, 2, 3, 4] {
@@ -394,7 +396,7 @@ fn given_token_budget_when_generating_llm_brief_then_output_stays_within_budget(
         });
     }
 
-    let brief = generate_llm_brief(&model, Some(250))?;
+    let brief = render_llm_evidence_brief(&model, Some(250))?;
 
     assert!(brief.len() <= 1000);
     assert!(brief.contains("# Project fixture"));
