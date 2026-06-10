@@ -98,29 +98,55 @@ Keep production dependencies provider-neutral.
 
 `Cargo.toml`:
 
+Keep the existing workspace dependency table intact. Confirm these relevant
+entries and add only missing entries or missing features:
+
 ```toml
 [workspace.dependencies]
 async-trait           = { version = "0.1.89" }
+clap                  = { version = "4.6.1", features = ["derive"] }
+error-location        = { version = "0.1.0" }
 futures               = { version = "0.3.32" }
+protobuf              = { version = "3.7.2" }
+protobuf-json-mapping = { version = "3.7.2" }
 rmcp                  = { version = "1.7.0", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
+schemars              = { version = "1.2.1", features = ["derive"] }
+serde                 = { version = "1.0.228", features = ["derive"] }
+serde_json            = { version = "1.0.150" }
 sha2                  = { version = "0.11.0" }
 tempfile              = { version = "3.27.0" }
+thiserror             = { version = "2.0.18" }
+tokio                 = { version = "1.52.3", features = ["io-util", "macros", "process", "rt-multi-thread"] }
+
+rr-core               = { path = "crates/rr-core" }
+rr-report             = { path = "crates/rr-report" }
+rr-scip               = { path = "crates/rr-scip" }
+scip                  = { path = "submodules/scip/bindings/rust" }
 ```
 
 `crates/rr-mcp/Cargo.toml`:
 
+Keep the existing `rr-mcp` dependency table intact. Confirm these relevant
+entries and add only missing entries or missing features:
+
 ```toml
 [dependencies]
 async-trait    = { workspace = true }
+clap           = { workspace = true }
+error-location = { workspace = true }
 futures        = { workspace = true }
 rmcp           = { workspace = true }
+schemars       = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
 sha2           = { workspace = true }
 tempfile       = { workspace = true }
 thiserror      = { workspace = true }
-error-location = { workspace = true }
-serde          = { workspace = true }
-serde_json     = { workspace = true }
 tokio          = { workspace = true }
+
+rr-core        = { workspace = true }
+rr-report      = { workspace = true }
+rr-scip        = { workspace = true }
 
 [dev-dependencies]
 protobuf       = { workspace = true }
@@ -241,6 +267,71 @@ Validation:
 
 ```bash
 rg -n "brief_model|max_concurrent_requests|deny_unknown_fields" crates/rr-mcp/src/llm_brief_params.rs
+```
+
+### 3a. Project-Qualified Element Brief Params
+
+Make deterministic element-brief calls optionally project-qualified before the
+work-plan tool starts emitting them. The existing resolver searches every
+cached project and can return an ambiguity error when two cached projects share
+the same SCIP symbol. Work-plan task recipes must include `project_id` so the
+parent Codex session can replay exact deterministic calls without depending on
+single-project cache state.
+
+`crates/rr-mcp/src/element_brief_params.rs`:
+
+```rust
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct ElementBriefParams {
+    pub symbol_id: String,
+    pub project_id: Option<String>,
+    pub include_inferred: Option<bool>,
+    pub reference_limit: Option<usize>,
+}
+```
+
+Update the existing `get_element_brief` handler in
+`crates/rr-mcp/src/mcp_server.rs` so `project_id` scopes lookup when present
+and the current cross-project resolver remains the compatibility path when it
+is absent:
+
+```rust
+let (model, element) = match params.project_id.as_deref() {
+    Some(project_id) => {
+        let model = cache
+            .models
+            .get(project_id)
+            .ok_or_else(|| McpError::missing_project(project_id.to_owned()))
+            .map_err(to_protocol_error)?;
+        let scip_id = params
+            .symbol_id
+            .strip_prefix("scip:")
+            .unwrap_or(params.symbol_id.as_str());
+        let element = model
+            .element_by_id(&params.symbol_id)
+            .or_else(|| {
+                if scip_id == params.symbol_id.as_str() {
+                    None
+                } else {
+                    model.element_by_id(scip_id)
+                }
+            })
+            .ok_or_else(|| McpError::missing_element(params.symbol_id.clone()))
+            .map_err(to_protocol_error)?;
+        (model, element)
+    }
+    None => resolve_element(&cache, &params.symbol_id).map_err(to_protocol_error)?,
+};
+```
+
+Validation:
+
+```bash
+rg -n "project_id" crates/rr-mcp/src/element_brief_params.rs crates/rr-mcp/src/mcp_server.rs
+cargo test -p rr-mcp mcp_server
 ```
 
 ### 4. Decentralized Work-Plan Params
@@ -897,6 +988,10 @@ use crate::{
     SourceSpanParams, scip_to_protocol_error, to_protocol_error,
 };
 
+use rr_core::{ElementSummary, SemanticModel};
+use rr_report::{build_element_brief, build_project_summary};
+use rr_scip::{Format, generate_rust_scip as run_rust_scip, project_scip_index};
+
 use futures::{StreamExt, stream};
 use rmcp::{
     ErrorData as ProtocolError, RoleServer, ServerHandler,
@@ -908,6 +1003,7 @@ use rmcp::{
     service::RequestContext,
     tool, tool_handler, tool_router,
 };
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
@@ -969,10 +1065,368 @@ Validation:
 rg -n "brief_model|max_concurrent_requests|with_runtime_config|LLM_BRIEF_PROMPT_VERSION" crates/rr-mcp/src/mcp_server.rs crates/rr-mcp/src/bin/rr-mcp.rs
 ```
 
-### 13. Host Capability Probe Tool
+### 13. MCP Server Helpers
+
+Add helpers below the server impl before adding the context-aware tool handlers
+that call them.
+
+`crates/rr-mcp/src/mcp_server.rs`:
+
+```rust
+fn structured(value: impl Serialize) -> McpResult<Json<serde_json::Value>> {
+    serde_json::to_value(value)
+        .map(Json)
+        .map_err(|error| McpError::serialization_failed(error.to_string()))
+}
+
+fn evidence_hash(value: impl Serialize) -> McpResult<String> {
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|error| McpError::serialization_failed(error.to_string()))?;
+    let digest = Sha256::digest(bytes);
+    Ok(digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>())
+}
+
+fn select_llm_brief_elements<'a>(
+    model: &'a SemanticModel,
+    params: &LlmBriefParams,
+) -> McpResult<Vec<&'a ElementSummary>> {
+    match &params.symbol_ids {
+        Some(symbol_ids) => symbol_ids
+            .iter()
+            .map(|symbol_id| {
+                model
+                    .element_by_id(symbol_id)
+                    .ok_or_else(|| McpError::missing_element(symbol_id.clone()))
+            })
+            .collect::<McpResult<Vec<_>>>(),
+        None => {
+            let mut ranked_elements: Vec<_> = model.elements.iter().collect();
+            ranked_elements.sort_by(|left, right| {
+                right
+                    .reference_count
+                    .cmp(&left.reference_count)
+                    .then_with(|| left.display_name.cmp(&right.display_name))
+                    .then_with(|| left.symbol_id.as_str().cmp(right.symbol_id.as_str()))
+            });
+            Ok(ranked_elements
+                .into_iter()
+                .take(params.limit.unwrap_or(25))
+                .collect())
+        }
+    }
+}
+
+fn brief_generation_capabilities_from_peer(peer: &rmcp::Peer<RoleServer>) -> BriefGenerationCapabilities {
+    let (legacy_sampling_supported, task_sampling_create_message_supported) = peer
+        .peer_info()
+        .map(|info| {
+            let legacy = info.capabilities.sampling.is_some();
+            let task = info
+                .capabilities
+                .tasks
+                .as_ref()
+                .map(|tasks| tasks.supports_sampling_create_message())
+                .unwrap_or(false);
+            (legacy, task)
+        })
+        .unwrap_or((false, false));
+    let sampling_supported =
+        legacy_sampling_supported || task_sampling_create_message_supported;
+    let notes = if sampling_supported {
+        vec!["generate_llm_brief may request sampling/createMessage from this host.".to_owned()]
+    } else {
+        vec!["Use generate_brief_work_plan and Codex-managed sub-agents instead of generate_llm_brief.".to_owned()]
+    };
+
+    BriefGenerationCapabilities {
+        sampling_supported,
+        legacy_sampling_supported,
+        task_sampling_create_message_supported,
+        generate_llm_brief_available: sampling_supported,
+        deterministic_work_plan_available: true,
+        fallback_tool: "generate_brief_work_plan".to_owned(),
+        unsupported_error_message: "MCP client does not advertise sampling support".to_owned(),
+        notes,
+    }
+}
+
+fn generated_brief_from_content(
+    content: GeneratedBriefContent,
+    evidence_hash: String,
+    cache_key: BriefCacheKey,
+    generated_by_model: String,
+    prompt_version: &str,
+) -> GeneratedBrief {
+    GeneratedBrief {
+        summary: content.summary,
+        five_w: content.five_w,
+        unknowns: content.unknowns,
+        evidence_hash,
+        cache_key,
+        generated_by_model,
+        prompt_version: prompt_version.to_owned(),
+    }
+}
+
+fn select_brief_work_plan_elements<'a>(
+    model: &'a SemanticModel,
+    params: &BriefWorkPlanParams,
+) -> McpResult<Vec<&'a ElementSummary>> {
+    match &params.symbol_ids {
+        Some(symbol_ids) => symbol_ids
+            .iter()
+            .map(|symbol_id| {
+                model
+                    .element_by_id(symbol_id)
+                    .ok_or_else(|| McpError::missing_element(symbol_id.clone()))
+            })
+            .collect::<McpResult<Vec<_>>>(),
+        None => {
+            let mut ranked_elements: Vec<_> = model.elements.iter().collect();
+            ranked_elements.sort_by(|left, right| {
+                right
+                    .reference_count
+                    .cmp(&left.reference_count)
+                    .then_with(|| left.display_name.cmp(&right.display_name))
+                    .then_with(|| left.symbol_id.as_str().cmp(right.symbol_id.as_str()))
+            });
+            Ok(ranked_elements
+                .into_iter()
+                .take(params.limit.unwrap_or(25))
+                .collect())
+        }
+    }
+}
+
+fn build_brief_work_plan(
+    model: &SemanticModel,
+    params: &BriefWorkPlanParams,
+    elements: Vec<&ElementSummary>,
+    generation_capabilities: BriefGenerationCapabilities,
+) -> BriefWorkPlan {
+    let max_tasks = params.max_subagent_tasks.unwrap_or(6).max(1);
+    let chunk_size = ((elements.len() + max_tasks - 1) / max_tasks).max(1);
+    let preferred_agent = params
+        .preferred_agent
+        .clone()
+        .unwrap_or_else(|| "explorer".to_owned());
+    let budget_tokens = params.budget_tokens.unwrap_or(800);
+    let reference_limit = params.reference_limit.unwrap_or(5);
+    let include_inferred = params.include_inferred.unwrap_or(true);
+    let include_generated_brief_call = generation_capabilities.generate_llm_brief_available;
+    let tasks = elements
+        .chunks(chunk_size)
+        .enumerate()
+        .map(|(index, chunk)| {
+            build_brief_work_task(
+                model,
+                params,
+                chunk,
+                index,
+                preferred_agent.as_str(),
+                budget_tokens,
+                reference_limit,
+                include_inferred,
+                include_generated_brief_call,
+            )
+        })
+        .collect();
+
+    BriefWorkPlan {
+        project_id: model.project.project_id.clone(),
+        prompt_version: LLM_BRIEF_PROMPT_VERSION.to_owned(),
+        execution_model: "codex-parent-spawns-subagents".to_owned(),
+        generation_capabilities,
+        parent_instructions: vec![
+            "Spawn one Codex sub-agent per task_id.".to_owned(),
+            "Pass each sub-agent only its task object and the repository constraints.".to_owned(),
+            "Each sub-agent must execute only the MCP tool calls listed in its task.".to_owned(),
+            "The MCP server does not spawn or manage Codex sub-agents.".to_owned(),
+        ],
+        tasks,
+        merge_instructions: vec![
+            "Merge task outputs by merge_key.".to_owned(),
+            "Preserve confirmed, inferred, and unknown distinctions.".to_owned(),
+            "Do not collapse different symbol scopes into one claim unless both task outputs support it.".to_owned(),
+        ],
+        verification_commands: vec![
+            "cargo test -p rr-mcp".to_owned(),
+            "cargo check -p rr-mcp --all-targets".to_owned(),
+        ],
+        unknowns: vec![
+            "Codex host sub-agent execution is outside rr-mcp and must be explicitly requested by the parent Codex session.".to_owned(),
+        ],
+    }
+}
+
+fn build_brief_work_task(
+    model: &SemanticModel,
+    params: &BriefWorkPlanParams,
+    elements: &[&ElementSummary],
+    index: usize,
+    preferred_agent: &str,
+    budget_tokens: usize,
+    reference_limit: usize,
+    include_inferred: bool,
+    include_generated_brief_call: bool,
+) -> BriefWorkTask {
+    let task_number = index + 1;
+    let task_id = format!("brief-task-{task_number:03}");
+    let symbol_ids = elements
+        .iter()
+        .map(|element| element.symbol_id.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let title = brief_work_task_title(elements, task_number);
+    let tool_calls = brief_work_tool_calls(
+        model.project.project_id.as_str(),
+        symbol_ids.as_slice(),
+        params.brief_model.clone(),
+        budget_tokens,
+        reference_limit,
+        include_inferred,
+        include_generated_brief_call,
+    );
+
+    BriefWorkTask {
+        task_id: task_id.clone(),
+        title,
+        preferred_agent: preferred_agent.to_owned(),
+        scope: format!(
+            "Independent symbol group with {} selected RefactorRadar element(s).",
+            symbol_ids.len()
+        ),
+        symbol_ids,
+        tool_calls,
+        expected_output_schema: brief_task_output_schema(),
+        merge_key: format!("{}::{task_id}", model.project.project_id),
+        budget_tokens,
+        dependencies: Vec::new(),
+        acceptance_criteria: vec![
+            "Use only evidence returned by listed MCP tool calls.".to_owned(),
+            "Separate confirmed facts from inference.".to_owned(),
+            "Put unsupported facts in unknowns.".to_owned(),
+            "Return JSON matching expected_output_schema.".to_owned(),
+        ],
+    }
+}
+
+fn brief_work_task_title(elements: &[&ElementSummary], task_number: usize) -> String {
+    match elements {
+        [element] => format!("Build focused brief for {}", element.display_name),
+        _ => format!("Build focused brief for symbol group {task_number:03}"),
+    }
+}
+
+fn brief_work_tool_calls(
+    project_id: &str,
+    symbol_ids: &[String],
+    brief_model: Option<String>,
+    budget_tokens: usize,
+    reference_limit: usize,
+    include_inferred: bool,
+    include_generated_brief_call: bool,
+) -> Vec<BriefTaskToolCall> {
+    let mut calls = symbol_ids
+        .iter()
+        .map(|symbol_id| BriefTaskToolCall {
+            tool_name: "get_element_brief".to_owned(),
+            arguments: serde_json::json!({
+                "symbol_id": symbol_id,
+                "project_id": project_id,
+                "include_inferred": include_inferred,
+                "reference_limit": reference_limit
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    if include_generated_brief_call {
+        calls.push(BriefTaskToolCall {
+            tool_name: "generate_llm_brief".to_owned(),
+            arguments: serde_json::json!({
+                "project_id": project_id,
+                "symbol_ids": symbol_ids,
+                "reference_limit": reference_limit,
+                "include_inferred": include_inferred,
+                "budget_tokens": budget_tokens,
+                "brief_model": brief_model,
+                "max_concurrent_requests": 1
+            }),
+        });
+    }
+
+    calls
+}
+
+fn brief_task_output_schema() -> BriefTaskOutputSchema {
+    BriefTaskOutputSchema {
+        format: "json".to_owned(),
+        required_fields: vec![
+            "task_id".to_owned(),
+            "merge_key".to_owned(),
+            "summary".to_owned(),
+            "five_w".to_owned(),
+            "confirmed".to_owned(),
+            "inferred".to_owned(),
+            "unknowns".to_owned(),
+            "evidence_hashes".to_owned(),
+            "source_span_ids".to_owned(),
+        ],
+        json_schema: serde_json::json!({
+            "type": "object",
+            "required": [
+                "task_id",
+                "merge_key",
+                "summary",
+                "five_w",
+                "confirmed",
+                "inferred",
+                "unknowns",
+                "evidence_hashes",
+                "source_span_ids"
+            ],
+            "properties": {
+                "task_id": { "type": "string" },
+                "merge_key": { "type": "string" },
+                "summary": { "type": "string" },
+                "five_w": {
+                    "type": "object",
+                    "required": ["who", "what", "when", "where", "why", "how"],
+                    "properties": {
+                        "who": { "type": "string" },
+                        "what": { "type": "string" },
+                        "when": { "type": "string" },
+                        "where": { "type": "string" },
+                        "why": { "type": "string" },
+                        "how": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                },
+                "confirmed": { "type": "array", "items": { "type": "string" } },
+                "inferred": { "type": "array", "items": { "type": "string" } },
+                "unknowns": { "type": "array", "items": { "type": "string" } },
+                "evidence_hashes": { "type": "array", "items": { "type": "string" } },
+                "source_span_ids": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+        }),
+    }
+}
+```
+
+Validation:
+
+```bash
+rg -n "fn evidence_hash|fn select_llm_brief_elements|fn brief_generation_capabilities_from_peer|fn generated_brief_from_content|fn select_brief_work_plan_elements|fn build_brief_work_plan|fn build_brief_work_task|fn brief_work_tool_calls|fn brief_task_output_schema" crates/rr-mcp/src/mcp_server.rs
+```
+
+### 14. Host Capability Probe Tool
 
 Add a deterministic MCP tool that tells Codex whether the current MCP host
-advertises `sampling/createMessage`. This directly addresses the audit unknown.
+advertises `sampling/createMessage`. This resolves host capability detection at
+runtime.
 
 `crates/rr-mcp/src/mcp_server.rs`:
 
@@ -1031,7 +1485,7 @@ Validation:
 rg -n "get_brief_generation_capabilities|brief_generation_capabilities_from_peer|sampling_supported" crates/rr-mcp/src/mcp_server.rs
 ```
 
-### 14. Decentralized Work-Plan Tool Handler
+### 15. Decentralized Work-Plan Tool Handler
 
 Add a deterministic MCP tool that returns a Codex-ready sub-agent work package.
 This tool does not call sampling and does not spawn agents. It returns the exact
@@ -1076,6 +1530,11 @@ async fn generate_brief_work_plan_with_capabilities(
 The returned plan must be explicit enough for Codex to act without inventing
 task boundaries:
 
+When `generation_capabilities.generate_llm_brief_available` is `false`, task
+tool calls must stay deterministic and must not include `generate_llm_brief`.
+Include `generate_llm_brief` task calls only when the same request context
+advertises sampling support.
+
 ```json
 {
   "project_id": "fixture",
@@ -1105,20 +1564,9 @@ task boundaries:
           "tool_name": "get_element_brief",
           "arguments": {
             "symbol_id": "rust-analyzer cargo basic_crate 0.1.0 basic_crate/public_sum().",
+            "project_id": "fixture",
             "include_inferred": true,
             "reference_limit": 5
-          }
-        },
-        {
-          "tool_name": "generate_llm_brief",
-          "arguments": {
-            "project_id": "fixture",
-            "symbol_ids": ["rust-analyzer cargo basic_crate 0.1.0 basic_crate/public_sum()."],
-            "reference_limit": 5,
-            "include_inferred": true,
-            "budget_tokens": 800,
-            "brief_model": null,
-            "max_concurrent_requests": 1
           }
         }
       ],
@@ -1137,7 +1585,40 @@ task boundaries:
         ],
         "json_schema": {
           "type": "object",
-          "required": ["task_id", "merge_key", "summary", "five_w", "unknowns"],
+          "required": [
+            "task_id",
+            "merge_key",
+            "summary",
+            "five_w",
+            "confirmed",
+            "inferred",
+            "unknowns",
+            "evidence_hashes",
+            "source_span_ids"
+          ],
+          "properties": {
+            "task_id": { "type": "string" },
+            "merge_key": { "type": "string" },
+            "summary": { "type": "string" },
+            "five_w": {
+              "type": "object",
+              "required": ["who", "what", "when", "where", "why", "how"],
+              "properties": {
+                "who": { "type": "string" },
+                "what": { "type": "string" },
+                "when": { "type": "string" },
+                "where": { "type": "string" },
+                "why": { "type": "string" },
+                "how": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "confirmed": { "type": "array", "items": { "type": "string" } },
+            "inferred": { "type": "array", "items": { "type": "string" } },
+            "unknowns": { "type": "array", "items": { "type": "string" } },
+            "evidence_hashes": { "type": "array", "items": { "type": "string" } },
+            "source_span_ids": { "type": "array", "items": { "type": "string" } }
+          },
           "additionalProperties": false
         }
       },
@@ -1172,7 +1653,7 @@ Validation:
 rg -n "generate_brief_work_plan|generate_brief_work_plan_with_capabilities|BriefWorkPlanParams|build_brief_work_plan|generation_capabilities|codex-parent-spawns-subagents" crates/rr-mcp/src/mcp_server.rs
 ```
 
-### 15. Generated Brief Tool Handler And Internal Helper
+### 16. Generated Brief Tool Handler And Internal Helper
 
 Change `generate_llm_brief` to use request-context sampling and a testable
 internal helper.
@@ -1346,321 +1827,6 @@ summary_schema is absent from generated response
 evidence_packet is only used while building requests, not returned
 ```
 
-### 16. MCP Server Helpers
-
-Add helpers below the server impl.
-
-`crates/rr-mcp/src/mcp_server.rs`:
-
-```rust
-fn structured(value: impl Serialize) -> McpResult<Json<serde_json::Value>> {
-    serde_json::to_value(value)
-        .map(Json)
-        .map_err(|error| McpError::serialization_failed(error.to_string()))
-}
-
-fn evidence_hash(value: impl Serialize) -> McpResult<String> {
-    let bytes = serde_json::to_vec(&value)
-        .map_err(|error| McpError::serialization_failed(error.to_string()))?;
-    let digest = Sha256::digest(bytes);
-    Ok(digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>())
-}
-
-fn select_llm_brief_elements<'a>(
-    model: &'a SemanticModel,
-    params: &LlmBriefParams,
-) -> McpResult<Vec<&'a ElementSummary>> {
-    match &params.symbol_ids {
-        Some(symbol_ids) => symbol_ids
-            .iter()
-            .map(|symbol_id| {
-                model
-                    .element_by_id(symbol_id)
-                    .ok_or_else(|| McpError::missing_element(symbol_id.clone()))
-            })
-            .collect::<McpResult<Vec<_>>>(),
-        None => {
-            let mut ranked_elements: Vec<_> = model.elements.iter().collect();
-            ranked_elements.sort_by(|left, right| {
-                right
-                    .reference_count
-                    .cmp(&left.reference_count)
-                    .then_with(|| left.display_name.cmp(&right.display_name))
-                    .then_with(|| left.symbol_id.as_str().cmp(right.symbol_id.as_str()))
-            });
-            Ok(ranked_elements
-                .into_iter()
-                .take(params.limit.unwrap_or(25))
-                .collect())
-        }
-    }
-}
-
-fn brief_generation_capabilities_from_peer(peer: &rmcp::Peer<RoleServer>) -> BriefGenerationCapabilities {
-    let (legacy_sampling_supported, task_sampling_create_message_supported) = peer
-        .peer_info()
-        .map(|info| {
-            let legacy = info.capabilities.sampling.is_some();
-            let task = info
-                .capabilities
-                .tasks
-                .as_ref()
-                .map(|tasks| tasks.supports_sampling_create_message())
-                .unwrap_or(false);
-            (legacy, task)
-        })
-        .unwrap_or((false, false));
-    let sampling_supported =
-        legacy_sampling_supported || task_sampling_create_message_supported;
-    let notes = if sampling_supported {
-        vec!["generate_llm_brief may request sampling/createMessage from this host.".to_owned()]
-    } else {
-        vec!["Use generate_brief_work_plan and Codex-managed sub-agents instead of generate_llm_brief.".to_owned()]
-    };
-
-    BriefGenerationCapabilities {
-        sampling_supported,
-        legacy_sampling_supported,
-        task_sampling_create_message_supported,
-        generate_llm_brief_available: sampling_supported,
-        deterministic_work_plan_available: true,
-        fallback_tool: "generate_brief_work_plan".to_owned(),
-        unsupported_error_message: "MCP client does not advertise sampling support".to_owned(),
-        notes,
-    }
-}
-
-fn generated_brief_from_content(
-    content: GeneratedBriefContent,
-    evidence_hash: String,
-    cache_key: BriefCacheKey,
-    generated_by_model: String,
-    prompt_version: &str,
-) -> GeneratedBrief {
-    GeneratedBrief {
-        summary: content.summary,
-        five_w: content.five_w,
-        unknowns: content.unknowns,
-        evidence_hash,
-        cache_key,
-        generated_by_model,
-        prompt_version: prompt_version.to_owned(),
-    }
-}
-
-fn select_brief_work_plan_elements<'a>(
-    model: &'a SemanticModel,
-    params: &BriefWorkPlanParams,
-) -> McpResult<Vec<&'a ElementSummary>> {
-    match &params.symbol_ids {
-        Some(symbol_ids) => symbol_ids
-            .iter()
-            .map(|symbol_id| {
-                model
-                    .element_by_id(symbol_id)
-                    .ok_or_else(|| McpError::missing_element(symbol_id.clone()))
-            })
-            .collect::<McpResult<Vec<_>>>(),
-        None => {
-            let mut ranked_elements: Vec<_> = model.elements.iter().collect();
-            ranked_elements.sort_by(|left, right| {
-                right
-                    .reference_count
-                    .cmp(&left.reference_count)
-                    .then_with(|| left.display_name.cmp(&right.display_name))
-                    .then_with(|| left.symbol_id.as_str().cmp(right.symbol_id.as_str()))
-            });
-            Ok(ranked_elements
-                .into_iter()
-                .take(params.limit.unwrap_or(25))
-                .collect())
-        }
-    }
-}
-
-fn build_brief_work_plan(
-    model: &SemanticModel,
-    params: &BriefWorkPlanParams,
-    elements: Vec<&ElementSummary>,
-    generation_capabilities: BriefGenerationCapabilities,
-) -> BriefWorkPlan {
-    let max_tasks = params.max_subagent_tasks.unwrap_or(6).max(1);
-    let chunk_size = ((elements.len() + max_tasks - 1) / max_tasks).max(1);
-    let preferred_agent = params
-        .preferred_agent
-        .clone()
-        .unwrap_or_else(|| "explorer".to_owned());
-    let budget_tokens = params.budget_tokens.unwrap_or(800);
-    let reference_limit = params.reference_limit.unwrap_or(5);
-    let include_inferred = params.include_inferred.unwrap_or(true);
-    let tasks = elements
-        .chunks(chunk_size)
-        .enumerate()
-        .map(|(index, chunk)| {
-            build_brief_work_task(
-                model,
-                params,
-                chunk,
-                index,
-                preferred_agent.as_str(),
-                budget_tokens,
-                reference_limit,
-                include_inferred,
-            )
-        })
-        .collect();
-
-    BriefWorkPlan {
-        project_id: model.project.project_id.clone(),
-        prompt_version: LLM_BRIEF_PROMPT_VERSION.to_owned(),
-        execution_model: "codex-parent-spawns-subagents".to_owned(),
-        generation_capabilities,
-        parent_instructions: vec![
-            "Spawn one Codex sub-agent per task_id.".to_owned(),
-            "Pass each sub-agent only its task object and the repository constraints.".to_owned(),
-            "Each sub-agent must execute only the MCP tool calls listed in its task.".to_owned(),
-            "The MCP server does not spawn or manage Codex sub-agents.".to_owned(),
-        ],
-        tasks,
-        merge_instructions: vec![
-            "Merge task outputs by merge_key.".to_owned(),
-            "Preserve confirmed, inferred, and unknown distinctions.".to_owned(),
-            "Do not collapse different symbol scopes into one claim unless both task outputs support it.".to_owned(),
-        ],
-        verification_commands: vec![
-            "cargo test -p rr-mcp".to_owned(),
-            "cargo check -p rr-mcp --all-targets".to_owned(),
-        ],
-        unknowns: vec![
-            "Codex host sub-agent execution is outside rr-mcp and must be explicitly requested by the parent Codex session.".to_owned(),
-        ],
-    }
-}
-
-fn build_brief_work_task(
-    model: &SemanticModel,
-    params: &BriefWorkPlanParams,
-    elements: &[&ElementSummary],
-    index: usize,
-    preferred_agent: &str,
-    budget_tokens: usize,
-    reference_limit: usize,
-    include_inferred: bool,
-) -> BriefWorkTask {
-    let task_number = index + 1;
-    let task_id = format!("brief-task-{task_number:03}");
-    let symbol_ids = elements
-        .iter()
-        .map(|element| element.symbol_id.as_str().to_owned())
-        .collect::<Vec<_>>();
-    let title = brief_work_task_title(elements, task_number);
-    let tool_calls = brief_work_tool_calls(
-        model.project.project_id.as_str(),
-        symbol_ids.as_slice(),
-        params.brief_model.clone(),
-        budget_tokens,
-        reference_limit,
-        include_inferred,
-    );
-
-    BriefWorkTask {
-        task_id: task_id.clone(),
-        title,
-        preferred_agent: preferred_agent.to_owned(),
-        scope: format!(
-            "Independent symbol group with {} selected RefactorRadar element(s).",
-            symbol_ids.len()
-        ),
-        symbol_ids,
-        tool_calls,
-        expected_output_schema: brief_task_output_schema(),
-        merge_key: format!("{}::{task_id}", model.project.project_id),
-        budget_tokens,
-        dependencies: Vec::new(),
-        acceptance_criteria: vec![
-            "Use only evidence returned by listed MCP tool calls.".to_owned(),
-            "Separate confirmed facts from inference.".to_owned(),
-            "Put unsupported facts in unknowns.".to_owned(),
-            "Return JSON matching expected_output_schema.".to_owned(),
-        ],
-    }
-}
-
-fn brief_work_task_title(elements: &[&ElementSummary], task_number: usize) -> String {
-    match elements {
-        [element] => format!("Build focused brief for {}", element.display_name),
-        _ => format!("Build focused brief for symbol group {task_number:03}"),
-    }
-}
-
-fn brief_work_tool_calls(
-    project_id: &str,
-    symbol_ids: &[String],
-    brief_model: Option<String>,
-    budget_tokens: usize,
-    reference_limit: usize,
-    include_inferred: bool,
-) -> Vec<BriefTaskToolCall> {
-    let mut calls = symbol_ids
-        .iter()
-        .map(|symbol_id| BriefTaskToolCall {
-            tool_name: "get_element_brief".to_owned(),
-            arguments: serde_json::json!({
-                "symbol_id": symbol_id,
-                "include_inferred": include_inferred,
-                "reference_limit": reference_limit
-            }),
-        })
-        .collect::<Vec<_>>();
-
-    calls.push(BriefTaskToolCall {
-        tool_name: "generate_llm_brief".to_owned(),
-        arguments: serde_json::json!({
-            "project_id": project_id,
-            "symbol_ids": symbol_ids,
-            "reference_limit": reference_limit,
-            "include_inferred": include_inferred,
-            "budget_tokens": budget_tokens,
-            "brief_model": brief_model,
-            "max_concurrent_requests": 1
-        }),
-    });
-
-    calls
-}
-
-fn brief_task_output_schema() -> BriefTaskOutputSchema {
-    BriefTaskOutputSchema {
-        format: "json".to_owned(),
-        required_fields: vec![
-            "task_id".to_owned(),
-            "merge_key".to_owned(),
-            "summary".to_owned(),
-            "five_w".to_owned(),
-            "confirmed".to_owned(),
-            "inferred".to_owned(),
-            "unknowns".to_owned(),
-            "evidence_hashes".to_owned(),
-            "source_span_ids".to_owned(),
-        ],
-        json_schema: serde_json::json!({
-            "type": "object",
-            "required": ["task_id", "merge_key", "summary", "five_w", "unknowns"],
-            "additionalProperties": false
-        }),
-    }
-}
-```
-
-Validation:
-
-```bash
-rg -n "fn evidence_hash|fn select_llm_brief_elements|fn brief_generation_capabilities_from_peer|fn generated_brief_from_content|fn select_brief_work_plan_elements|fn build_brief_work_plan|fn build_brief_work_task|fn brief_work_tool_calls|fn brief_task_output_schema" crates/rr-mcp/src/mcp_server.rs
-```
-
 ### 17. Unit Tests For Generation Behavior
 
 Use fake clients for unit tests. Do not call an MCP host here.
@@ -1793,12 +1959,15 @@ async fn given_loaded_project_when_generating_brief_work_plan_then_codex_subagen
         result["tasks"][0]["tool_calls"][0]["tool_name"]
     );
     assert_eq!(
-        "generate_llm_brief",
-        result["tasks"][0]["tool_calls"][1]["tool_name"]
+        "fixture",
+        result["tasks"][0]["tool_calls"][0]["arguments"]["project_id"]
     );
     assert_eq!(
-        "test-model-hint",
-        result["tasks"][0]["tool_calls"][1]["arguments"]["brief_model"]
+        1,
+        result["tasks"][0]["tool_calls"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
     );
     assert_eq!(
         "fixture::brief-task-001",
@@ -1883,13 +2052,14 @@ async fn given_request_model_hint_when_generating_llm_brief_then_generated_summa
 Add focused tests for:
 
 ```text
-- capability probe returns sampling_supported=true for sampling-capable MCP clients
-- capability probe returns generate_llm_brief_available=false and fallback_tool=generate_brief_work_plan for non-sampling MCP clients
 - work plan returns execution_model = codex-parent-spawns-subagents
-- work plan embeds generation_capabilities from the current MCP host
+- work plan embeds the injected generation_capabilities used by the internal helper
 - work plan contains one task per selected chunk and respects max_subagent_tasks
-- each work-plan task contains get_element_brief tool calls for scoped symbols
-- each work-plan task contains a generate_llm_brief call scoped to the same symbols
+- project-qualified get_element_brief preserves existing stable ID, raw SCIP
+  symbol, and scip:-prefixed SCIP symbol lookup behavior
+- each work-plan task contains project-qualified get_element_brief tool calls for scoped symbols
+- unsupported-host work-plan tasks omit generate_llm_brief and rely on deterministic get_element_brief calls
+- sampling-capable work-plan tasks contain a generate_llm_brief call scoped to the same symbols
 - work-plan task output schema lists required merge fields
 - work-plan parent instructions explicitly say rr-mcp does not spawn sub-agents
 - server-level brief_model fallback
@@ -2168,8 +2338,19 @@ async fn given_mcp_client_when_generating_brief_work_plan_then_subagent_manifest
     );
     assert_eq!("brief-task-001", structured["tasks"][0]["task_id"]);
     assert_eq!(
-        "generate_llm_brief",
-        structured["tasks"][0]["tool_calls"][1]["tool_name"]
+        "get_element_brief",
+        structured["tasks"][0]["tool_calls"][0]["tool_name"]
+    );
+    assert_eq!(
+        PROJECT_ID,
+        structured["tasks"][0]["tool_calls"][0]["arguments"]["project_id"]
+    );
+    assert_eq!(
+        1,
+        structured["tasks"][0]["tool_calls"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
     );
     assert_eq!(0, client_handler.sampling_call_count());
 
@@ -2239,8 +2420,9 @@ async fn start_protocol_pair(
 {
     let (server_transport, client_transport) = tokio::io::duplex(4096);
     let _server_task = tokio::spawn(async move {
-        let server = McpServer::new().serve(server_transport).await?;
-        server.waiting().await
+        if let Ok(server) = McpServer::new().serve(server_transport).await {
+            let _ = server.waiting().await;
+        }
     });
 
     let client = client_handler.serve(client_transport).await?;
@@ -2429,28 +2611,61 @@ Check work-plan response shape through tests or an MCP client:
           "tool_name": "get_element_brief",
           "arguments": {
             "symbol_id": "...",
+            "project_id": "fixture",
             "reference_limit": 5,
             "include_inferred": true
-          }
-        },
-        {
-          "tool_name": "generate_llm_brief",
-          "arguments": {
-            "project_id": "fixture",
-            "symbol_ids": ["..."],
-            "reference_limit": 5,
-            "include_inferred": true,
-            "budget_tokens": 800,
-            "brief_model": null,
-            "max_concurrent_requests": 1
           }
         }
       ],
       "expected_output_schema": {
         "format": "json",
-        "required_fields": ["task_id", "merge_key", "summary", "five_w", "unknowns"],
+        "required_fields": [
+          "task_id",
+          "merge_key",
+          "summary",
+          "five_w",
+          "confirmed",
+          "inferred",
+          "unknowns",
+          "evidence_hashes",
+          "source_span_ids"
+        ],
         "json_schema": {
           "type": "object",
+          "required": [
+            "task_id",
+            "merge_key",
+            "summary",
+            "five_w",
+            "confirmed",
+            "inferred",
+            "unknowns",
+            "evidence_hashes",
+            "source_span_ids"
+          ],
+          "properties": {
+            "task_id": { "type": "string" },
+            "merge_key": { "type": "string" },
+            "summary": { "type": "string" },
+            "five_w": {
+              "type": "object",
+              "required": ["who", "what", "when", "where", "why", "how"],
+              "properties": {
+                "who": { "type": "string" },
+                "what": { "type": "string" },
+                "when": { "type": "string" },
+                "where": { "type": "string" },
+                "why": { "type": "string" },
+                "how": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "confirmed": { "type": "array", "items": { "type": "string" } },
+            "inferred": { "type": "array", "items": { "type": "string" } },
+            "unknowns": { "type": "array", "items": { "type": "string" } },
+            "evidence_hashes": { "type": "array", "items": { "type": "string" } },
+            "source_span_ids": { "type": "array", "items": { "type": "string" } }
+          },
           "additionalProperties": false
         }
       },
@@ -2511,7 +2726,9 @@ Implementation is complete only when all of this is true:
 - generate_brief_work_plan returns a deterministic Codex-ready sub-agent work manifest.
 - generate_brief_work_plan does not call sampling/createMessage.
 - generate_brief_work_plan embeds generation_capabilities from the same MCP request context.
-- generate_brief_work_plan returns exact MCP tool-call recipes for each task.
+- generate_brief_work_plan returns exact project-qualified MCP tool-call recipes for each task.
+- generate_brief_work_plan omits generate_llm_brief task calls when the current host does not advertise sampling support.
+- generate_brief_work_plan includes generate_llm_brief task calls only when the current host advertises sampling support.
 - generate_brief_work_plan returns expected output schema, merge key, task budget, dependencies, and acceptance criteria for each task.
 - generate_brief_work_plan parent instructions explicitly say Codex spawns sub-agents and rr-mcp does not.
 - generate_llm_brief builds evidence packets from cached deterministic element briefs.
@@ -2576,9 +2793,9 @@ test, and through Codex only if the Codex tool call was actually attempted.
 
 ## Runtime Capability Resolution
 
-Codex host sampling support is the audit's main unknown. The implementation
-must resolve it at runtime with `get_brief_generation_capabilities` before
-choosing a generated-brief path.
+Codex host sampling support is a runtime capability. The implementation must
+resolve it with `get_brief_generation_capabilities` before choosing a
+generated-brief path.
 
 Probe first:
 
