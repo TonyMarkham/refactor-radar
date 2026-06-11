@@ -7,3 +7,6 @@
 [submodule "submodules/scip-dotnet"]
 	path = submodules/scip-dotnet
 	url = https://github.com/sourcegraph/scip-dotnet
+[submodule "submodules/graphify"]
+	path = submodules/graphify
+	url = https://github.com/safishamsi/graphify.git
