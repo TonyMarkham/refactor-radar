@@ -30,6 +30,18 @@ turn `gpt-suck-ass.md` into a real impl plan with actual bash/code snippets
 
 ---
 
+## Guided Implement
+```text
+$online-entity-codex-plugin:guided-implement gpt-suck-ass.md
+
+- YOU should run the verification steps in the plan
+- YOU should write/edit the tests in the plan
+- **CRITICAL** YOU never write/edit Source Code unless I explicitly give you permission
+- When presenting edit steps, always provide the target line number as a landmark
+```
+
+---
+
 ## Confirm
 ```text
 fmt, check, clippy, build and test all clean
