@@ -13,12 +13,7 @@ Prefer short runbooks over planning prose.
 
 ## Init
 ```text
-read:
-- docs/adr/0001-refactor-radar-project-direction.md
-- VS-llm-brief.md
-- gpt-suck-ass.md
-
-turn `gpt-suck-ass.md` into a real impl plan with actual bash/code snippets
+turn `v2/plans/VS-01-DataModel.md` into a real impl plan with actual bash/code snippets
 
 **CRITICAL** Be sure to use all rust coding directives found in AGENTS.md
 **CRITICAL** Follow ALL current error handling practices in this repo.
@@ -32,7 +27,7 @@ turn `gpt-suck-ass.md` into a real impl plan with actual bash/code snippets
 
 ## Guided Implement
 ```text
-$online-entity-codex-plugin:guided-implement gpt-suck-ass.md
+$online-entity-codex-plugin:guided-implement v2/plans/VS-01-DataModel.md
 
 - YOU should run the verification steps in the plan
 - YOU should write/edit the tests in the plan

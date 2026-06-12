@@ -1,8 +1,6 @@
 # Project-local Codex configuration for coach-saas.
 # Codex loads this file only when the project is trusted.
 
-# model_instructions_file = "./CorrectnessFirstCodexBaseInstructions.md"
-
 developer_instructions = """
 Correctness is more important than speed.
 
@@ -35,85 +33,86 @@ Respect scope boundaries. Planning, reviewing, auditing, optimizing, or explaini
 When challenged, do not defend the prior answer. Return to the exact question or directive, state the corrected answer, identify the mismatch, and correct course with the smallest necessary change.
 """
 
-[mcp_servers.soul]
-command = ".soul/indexer"
-args = ["serve", "--root", "."]
-enabled = true
-required = true
-startup_timeout_sec = 10
-tool_timeout_sec = 60
 
-[mcp_servers.refactor_radar]
-command = "target/release/rr-mcp"
-args = [
-    "--rust-analyzer-path",
-    "/home/tony/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer",
-    "--brief-model",
-    "gpt-5-mini",
-    "--max-concurrent-requests",
-    "4",
-]
-enabled = true
-required = true
-startup_timeout_sec = 10
-tool_timeout_sec = 60
+# [mcp_servers.soul]
+# command = ".soul/indexer"
+# args = ["serve", "--root", "."]
+# enabled = true
+# required = true
+# startup_timeout_sec = 10
+# tool_timeout_sec = 60
 
-[mcp_servers.refactor_radar.tools.get_project_summary]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.scan_project]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.load_scip_project]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.get_source_span]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.list_elements]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.get_function_signature]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.generate_llm_brief]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.get_element_brief]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.get_5w_summary]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.find_references]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.generate_rust_scip]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.get_element]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.find_related_symbols]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.get_brief_generation_capabilities]
-approval_mode = "approve"
-
-[mcp_servers.refactor_radar.tools.generate_brief_work_plan]
-approval_mode = "approve"
-
-[mcp_servers.soul.tools.soul_explain]
-approval_mode = "approve"
-
-[mcp_servers.soul.tools.soul_index]
-approval_mode = "approve"
-
-[mcp_servers.soul.tools.soul_list_gaps]
-approval_mode = "approve"
-
-[mcp_servers.soul.tools.soul_annotation_syntax]
-approval_mode = "approve"
-
-[mcp_servers.soul.tools.soul_list_documents]
-approval_mode = "approve"
+# [mcp_servers.refactor_radar]
+# command = "target/release/rr-mcp"
+# args = [
+#     "--rust-analyzer-path",
+#     "/home/tony/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+#     "--brief-model",
+#     "gpt-5-mini",
+#     "--max-concurrent-requests",
+#     "4",
+# ]
+# enabled = true
+# required = true
+# startup_timeout_sec = 10
+# tool_timeout_sec = 60
+#
+# [mcp_servers.refactor_radar.tools.get_project_summary]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.scan_project]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.load_scip_project]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.get_source_span]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.list_elements]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.get_function_signature]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.generate_llm_brief]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.get_element_brief]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.get_5w_summary]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.find_references]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.generate_rust_scip]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.get_element]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.find_related_symbols]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.get_brief_generation_capabilities]
+# approval_mode = "approve"
+#
+# [mcp_servers.refactor_radar.tools.generate_brief_work_plan]
+# approval_mode = "approve"
+#
+# [mcp_servers.soul.tools.soul_explain]
+# approval_mode = "approve"
+#
+# [mcp_servers.soul.tools.soul_index]
+# approval_mode = "approve"
+#
+# [mcp_servers.soul.tools.soul_list_gaps]
+# approval_mode = "approve"
+#
+# [mcp_servers.soul.tools.soul_annotation_syntax]
+# approval_mode = "approve"
+#
+# [mcp_servers.soul.tools.soul_list_documents]
+# approval_mode = "approve"
